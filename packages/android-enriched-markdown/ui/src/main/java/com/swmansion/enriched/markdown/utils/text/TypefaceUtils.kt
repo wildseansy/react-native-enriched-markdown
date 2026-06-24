@@ -65,6 +65,14 @@ object TypefaceUtils {
     }
   }
 
+  fun registerComposeFont(
+    key: String,
+    typeface: Typeface,
+  ): String {
+    typefaceCache["family:$key"] = typeface
+    return key
+  }
+
   fun loadFontFamily(
     context: Context,
     family: String,
