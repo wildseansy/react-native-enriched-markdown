@@ -233,6 +233,27 @@ static NSString *headingPrefixForLevel(NSInteger level)
   }
 }
 
+/// Two spaces of indentation per nesting depth, then the unordered list marker.
+static NSString *listPrefixForDepth(NSInteger depth)
+{
+  NSMutableString *prefix = [NSMutableString string];
+  for (NSInteger i = 0; i < depth; i++) {
+    [prefix appendString:@"  "];
+  }
+  [prefix appendString:@"- "];
+  return prefix;
+}
+
+/// Markdown line prefix for a block range (heading hashes or list marker).
+static NSString *blockPrefixForRange(ENRMBlockRange *blockRange)
+{
+  if (blockRange.type == ENRMInputBlockTypeUnorderedListItem) {
+    return listPrefixForDepth(blockRange.depth);
+  }
+  NSInteger level = ENRMHeadingLevelForBlockType(blockRange.type);
+  return level > 0 ? headingPrefixForLevel(level) : @"";
+}
+
 + (NSString *)serializePlainText:(NSString *)text
                           ranges:(NSArray<ENRMFormattingRange *> *)ranges
                      blockRanges:(NSArray<ENRMBlockRange *> *)blockRanges
@@ -243,15 +264,12 @@ static NSString *headingPrefixForLevel(NSInteger level)
     return inlineMarkdown;
   }
 
-  // Inline serialization never adds or removes newlines, so line N of the
-  // inline markdown maps to paragraph N of the plain text. Walk plain-text
-  // lines to find each one's char range, look up its heading level, and prefix
-  // the matching markdown line.
+  // Inline serialization never adds or removes newlines, so line N of the inline
+  // markdown maps to paragraph N of the plain text. Walk plain-text lines, look
+  // up each one's block range, and prefix the matching markdown line.
   NSArray<NSString *> *plainLines = [text componentsSeparatedByString:@"\n"];
   NSMutableArray<NSString *> *markdownLines = [[inlineMarkdown componentsSeparatedByString:@"\n"] mutableCopy];
 
-  // Line counts must align for the index mapping to be valid; bail out safely if
-  // an inline edge case ever breaks the invariant.
   if (plainLines.count != markdownLines.count) {
     return inlineMarkdown;
   }
@@ -261,23 +279,17 @@ static NSString *headingPrefixForLevel(NSInteger level)
     NSUInteger lineLength = plainLines[lineIndex].length;
     NSRange lineRange = NSMakeRange(lineStart, lineLength);
 
-    NSInteger level = 0;
     for (ENRMBlockRange *blockRange in blockRanges) {
-      NSInteger blockLevel = ENRMHeadingLevelForBlockType(blockRange.type);
-      if (blockLevel <= 0) {
+      if (blockRange.type == ENRMInputBlockTypeParagraph) {
         continue;
       }
-      // A heading covers its paragraph; intersection (or an empty line whose
-      // start sits inside the block range) marks the line as that heading.
+      // A block covers its paragraph; intersection (or an empty line whose start
+      // sits inside the block range) marks the line as that block.
       if (NSIntersectionRange(lineRange, blockRange.range).length > 0 ||
           (lineLength == 0 && NSLocationInRange(lineStart, blockRange.range))) {
-        level = blockLevel;
+        markdownLines[lineIndex] = [blockPrefixForRange(blockRange) stringByAppendingString:markdownLines[lineIndex]];
         break;
       }
-    }
-
-    if (level > 0) {
-      markdownLines[lineIndex] = [headingPrefixForLevel(level) stringByAppendingString:markdownLines[lineIndex]];
     }
 
     lineStart += lineLength + 1; // +1 for the '\n' separator

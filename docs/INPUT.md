@@ -68,22 +68,38 @@ Styles are also available through the built-in native format bar that appears on
 
 ## Block Styles
 
-Supported block styles:
+Unlike inline styles, block styles apply to whole lines (every line the selection
+touches) and are mutually exclusive per line.
+
+### Headings
 
 - heading 1 (`toggleH1()`)
 - heading 2 (`toggleH2()`)
 - heading 3 (`toggleH3()`)
 
-Unlike inline styles, block styles apply to the whole line (or every line the
-selection touches) and are mutually exclusive — toggling one heading level off
-returns the line to a normal paragraph, and toggling a different level replaces
-the current one. Calling a heading `toggle` again with the same level removes it.
+Toggling one heading level off returns the line to a normal paragraph, and
+toggling a different level replaces the current one. Headings render in-editor at
+their configured size and serialize to Markdown as ATX headings (`# `, `## `,
+`### `). The active heading level for the cursor's line is reported through
+`onChangeState` as `h1`, `h2`, and `h3` (each with an `isActive` property).
 
-Headings render in-editor at their configured size and serialize to Markdown as
-ATX headings (`# `, `## `, `### `); the markers only exist in the serialized
-output, never in the editor text. The active heading level for the cursor's line
-is reported through `onChangeState` as `h1`, `h2`, and `h3` (each with an
-`isActive` property), the same shape as inline styles.
+### Unordered (bullet) lists
+
+Toggle a bullet list on the line(s) the selection touches with
+`toggleUnorderedList()`. Lists support nesting:
+
+- `indentList()` increases the current item's depth; `outdentList()` decreases it.
+- On a hardware keyboard, **Tab** indents and **Shift+Tab** outdents.
+- **Enter** continues the list with a new item at the same depth; pressing Enter on an empty item exits the list.
+- **Backspace** at the start of an item outdents it, then removes the list marker once at the top level.
+
+Bullets render in-editor (filled dot, ring, then square as depth increases) and
+serialize to Markdown as `- ` markers, indented two spaces per nesting level. The
+active list state for the cursor's line is reported through `onChangeState` as
+`unorderedList`.
+
+For both, the markers only exist in the serialized output, never in the editor
+text — so they never collide with `#`-prefixed or `-`-prefixed mention text.
 
 ## Links
 

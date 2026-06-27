@@ -71,6 +71,7 @@ class InputEventEmitter(
         blockType == BlockType.HEADING_1,
         blockType == BlockType.HEADING_2,
         blockType == BlockType.HEADING_3,
+        blockType == BlockType.UNORDERED_LIST_ITEM,
       ),
     )
   }
@@ -179,6 +180,7 @@ class InputEventEmitter(
         isH1 = view.blockTypeAtCursor() == BlockType.HEADING_1,
         isH2 = view.blockTypeAtCursor() == BlockType.HEADING_2,
         isH3 = view.blockTypeAtCursor() == BlockType.HEADING_3,
+        isUnorderedList = view.blockTypeAtCursor() == BlockType.UNORDERED_LIST_ITEM,
       ),
     )
   }

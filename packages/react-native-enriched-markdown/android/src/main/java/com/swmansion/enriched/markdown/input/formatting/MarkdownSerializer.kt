@@ -1,14 +1,16 @@
 package com.swmansion.enriched.markdown.input.formatting
 
 import com.swmansion.enriched.markdown.input.model.BlockRange
+import com.swmansion.enriched.markdown.input.model.BlockType
 import com.swmansion.enriched.markdown.input.model.FormattingRange
 import com.swmansion.enriched.markdown.input.model.StyleType
 
 object MarkdownSerializer {
   /**
    * Serializes inline marks and then prefixes each line with its block marker
-   * (`# `/`## `/`### ` for headings). Block markers are line-based, so this runs
-   * after inline serialization, which preserves the text's line structure.
+   * (`# `/`## `/`### ` for headings; `- ` indented two spaces per depth for
+   * unordered list items). Block markers are line-based, so this runs after
+   * inline serialization, which preserves the text's line structure.
    */
   fun serialize(
     text: String,
@@ -28,18 +30,21 @@ object MarkdownSerializer {
     for (i in plainLines.indices) {
       val lineLength = plainLines[i].length
       val lineEnd = lineStart + lineLength
-      val level =
-        blockRanges
-          .firstOrNull { br ->
-            br.type.headingLevel > 0 &&
-              (
-                maxOf(lineStart, br.start) < minOf(lineEnd, br.end) ||
-                  (lineLength == 0 && lineStart >= br.start && lineStart < br.end)
-              )
-          }?.type
-          ?.headingLevel ?: 0
-      if (level > 0) {
-        markdownLines[i] = "#".repeat(level) + " " + markdownLines[i]
+      val block =
+        blockRanges.firstOrNull { br ->
+          br.type != BlockType.PARAGRAPH &&
+            (
+              maxOf(lineStart, br.start) < minOf(lineEnd, br.end) ||
+                (lineLength == 0 && lineStart >= br.start && lineStart < br.end)
+            )
+        }
+      if (block != null) {
+        markdownLines[i] =
+          if (block.type == BlockType.UNORDERED_LIST_ITEM) {
+            "  ".repeat(block.depth) + "- " + markdownLines[i]
+          } else {
+            "#".repeat(block.type.headingLevel) + " " + markdownLines[i]
+          }
       }
       lineStart = lineEnd + 1
     }

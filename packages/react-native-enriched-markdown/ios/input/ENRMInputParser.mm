@@ -237,15 +237,15 @@ static bool runMd4cParse(NSString *markdown, ParseContext &context)
   return md_parse(completedUTF8, (MD_SIZE)completedLength, &parser, &context) == 0;
 }
 
-/// Strips ATX heading prefixes (`# `, `## `, `### `) from the start of each line
-/// and returns the heading block ranges. md4c leaves block markers as literal
-/// text (its block callbacks are no-ops), so headings are extracted here as a
-/// line-based post-pass. Inline formatting ranges are remapped through an
-/// old->new index map so they stay anchored to the same characters after the
-/// prefixes are removed.
-static void extractHeadingBlocks(NSString *plainText, NSArray<ENRMFormattingRange *> *inlineRanges, NSString **outText,
-                                 NSArray<ENRMFormattingRange *> **outInlineRanges,
-                                 NSArray<ENRMBlockRange *> **outBlockRanges)
+/// Strips block markers from the start of each line and returns the block ranges
+/// (ATX headings `# `/`## `/`### `, or unordered list markers `- `/`* `/`+ `
+/// optionally indented two spaces per nesting level). md4c leaves block markers
+/// as literal text (its block callbacks are no-ops), so blocks are extracted
+/// here as a line-based post-pass. Inline formatting ranges are remapped through
+/// an old->new index map so they stay anchored to the same characters after the
+/// markers are removed.
+static void extractBlocks(NSString *plainText, NSArray<ENRMFormattingRange *> *inlineRanges, NSString **outText,
+                          NSArray<ENRMFormattingRange *> **outInlineRanges, NSArray<ENRMBlockRange *> **outBlockRanges)
 {
   NSUInteger length = plainText.length;
   NSMutableString *result = [NSMutableString stringWithCapacity:length];
@@ -260,6 +260,8 @@ static void extractHeadingBlocks(NSString *plainText, NSArray<ENRMFormattingRang
       lineEnd++;
     }
 
+    // Detect an ATX heading (`#{1,3} `) first; otherwise an unordered list item
+    // (`-`/`*`/`+` + space, indented two spaces per nesting level).
     NSUInteger marker = lineStart;
     NSUInteger hashes = 0;
     while (marker < lineEnd && [plainText characterAtIndex:marker] == '#') {
@@ -267,7 +269,29 @@ static void extractHeadingBlocks(NSString *plainText, NSArray<ENRMFormattingRang
       marker++;
     }
     BOOL isHeading = hashes >= 1 && hashes <= 3 && marker < lineEnd && [plainText characterAtIndex:marker] == ' ';
-    NSUInteger contentStart = isHeading ? marker + 1 : lineStart;
+
+    BOOL isListItem = NO;
+    NSInteger depth = 0;
+    NSUInteger contentStart = lineStart;
+    if (isHeading) {
+      contentStart = marker + 1; // hashes + single space
+    } else {
+      NSUInteger cursor = lineStart;
+      NSUInteger spaces = 0;
+      while (cursor < lineEnd && [plainText characterAtIndex:cursor] == ' ') {
+        spaces++;
+        cursor++;
+      }
+      if (cursor < lineEnd) {
+        unichar listMarker = [plainText characterAtIndex:cursor];
+        if ((listMarker == '-' || listMarker == '*' || listMarker == '+') && cursor + 1 < lineEnd &&
+            [plainText characterAtIndex:cursor + 1] == ' ') {
+          isListItem = YES;
+          depth = MIN((NSInteger)(spaces / 2), ENRMMaxListDepth);
+          contentStart = cursor + 2; // marker + single space
+        }
+      }
+    }
 
     // Stripped prefix characters collapse onto the next kept position.
     for (NSUInteger i = lineStart; i < contentStart; i++) {
@@ -284,6 +308,11 @@ static void extractHeadingBlocks(NSString *plainText, NSArray<ENRMFormattingRang
 
     if (isHeading) {
       [blocks addObject:[ENRMBlockRange rangeWithType:ENRMBlockTypeForHeadingLevel((NSInteger)hashes)
+                                                depth:0
+                                                range:NSMakeRange(blockStartNew, newPos - blockStartNew)]];
+    } else if (isListItem) {
+      [blocks addObject:[ENRMBlockRange rangeWithType:ENRMInputBlockTypeUnorderedListItem
+                                                depth:depth
                                                 range:NSMakeRange(blockStartNew, newPos - blockStartNew)]];
     }
 
@@ -478,7 +507,7 @@ static void extractHeadingBlocks(NSString *plainText, NSArray<ENRMFormattingRang
   NSString *blockText = nil;
   NSArray<ENRMFormattingRange *> *blockAdjustedRanges = nil;
   NSArray<ENRMBlockRange *> *blockRanges = nil;
-  extractHeadingBlocks(plainText, formattingRanges, &blockText, &blockAdjustedRanges, &blockRanges);
+  extractBlocks(plainText, formattingRanges, &blockText, &blockAdjustedRanges, &blockRanges);
 
   parseResult.plainText = blockText;
   parseResult.formattingRanges = blockAdjustedRanges;

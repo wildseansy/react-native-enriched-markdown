@@ -31,7 +31,7 @@ interface FormattingToolbarProps {
 const ICON_COLOR = '#001A72';
 const ICON_SIZE = 18;
 
-const HEADING_TEXT_STYLE = {
+const BLOCK_TEXT_STYLE = {
   color: ICON_COLOR,
   fontWeight: '700' as const,
   fontSize: 13,
@@ -78,17 +78,22 @@ const ITEMS = [
   {
     styleKey: 'h1',
     action: 'toggleH1',
-    icon: <Text style={HEADING_TEXT_STYLE}>H1</Text>,
+    icon: <Text style={BLOCK_TEXT_STYLE}>H1</Text>,
   },
   {
     styleKey: 'h2',
     action: 'toggleH2',
-    icon: <Text style={HEADING_TEXT_STYLE}>H2</Text>,
+    icon: <Text style={BLOCK_TEXT_STYLE}>H2</Text>,
   },
   {
     styleKey: 'h3',
     action: 'toggleH3',
-    icon: <Text style={HEADING_TEXT_STYLE}>H3</Text>,
+    icon: <Text style={BLOCK_TEXT_STYLE}>H3</Text>,
+  },
+  {
+    styleKey: 'unorderedList',
+    action: 'toggleUnorderedList',
+    icon: <Text style={BLOCK_TEXT_STYLE}>• List</Text>,
   },
 ] as const;
 
@@ -161,6 +166,20 @@ export function FormattingToolbar({
           testID="toolbar-link"
         >
           {LINK_ICON}
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.toolbarButton}
+          onPress={() => inputRef.current?.outdentList()}
+          testID="toolbar-outdent"
+        >
+          <Text style={BLOCK_TEXT_STYLE}>⇤</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.toolbarButton}
+          onPress={() => inputRef.current?.indentList()}
+          testID="toolbar-indent"
+        >
+          <Text style={BLOCK_TEXT_STYLE}>⇥</Text>
         </TouchableOpacity>
         {mentionIndicators?.map((indicator) => (
           <TouchableOpacity

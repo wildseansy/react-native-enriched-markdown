@@ -10,6 +10,7 @@ enum class BlockType {
   HEADING_1,
   HEADING_2,
   HEADING_3,
+  UNORDERED_LIST_ITEM,
   ;
 
   /** Heading level (1-3) for a heading block, or 0 for non-headings. */
@@ -33,9 +34,13 @@ enum class BlockType {
   }
 }
 
-/** A line range tagged with its block type, used to hand block structure to the serializer. */
+/** Maximum supported list nesting depth (0-based), so indentation stays sane. */
+const val MAX_LIST_DEPTH = 5
+
+/** A line range tagged with its block type and nesting depth, used to hand block structure to the serializer. */
 data class BlockRange(
   val type: BlockType,
   val start: Int,
   val end: Int,
+  val depth: Int = 0,
 )

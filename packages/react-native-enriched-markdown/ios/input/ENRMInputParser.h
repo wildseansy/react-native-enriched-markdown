@@ -10,7 +10,7 @@ NS_ASSUME_NONNULL_BEGIN
 @interface ENRMParseResult : NSObject
 @property (nonatomic, strong, readonly) NSString *plainText;
 @property (nonatomic, strong, readonly) NSArray<ENRMFormattingRange *> *formattingRanges;
-/// Paragraph block ranges (headings) in `plainText` coordinates.
+/// Paragraph block ranges (headings, list items) in `plainText` coordinates.
 @property (nonatomic, strong, readonly) NSArray<ENRMBlockRange *> *blockRanges;
 @end
 

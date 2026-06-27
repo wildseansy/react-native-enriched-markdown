@@ -61,6 +61,7 @@ export interface OnChangeStateEvent {
   h1: { isActive: boolean };
   h2: { isActive: boolean };
   h3: { isActive: boolean };
+  unorderedList: { isActive: boolean };
 }
 
 export interface OnRequestMarkdownResultEvent {
@@ -145,6 +146,7 @@ export interface OnContextMenuItemPressEvent {
     h1: { isActive: boolean };
     h2: { isActive: boolean };
     h3: { isActive: boolean };
+    unorderedList: { isActive: boolean };
   };
 }
 
@@ -292,6 +294,9 @@ interface NativeCommands {
   toggleH1: (viewRef: React.ElementRef<ComponentType>) => void;
   toggleH2: (viewRef: React.ElementRef<ComponentType>) => void;
   toggleH3: (viewRef: React.ElementRef<ComponentType>) => void;
+  toggleUnorderedList: (viewRef: React.ElementRef<ComponentType>) => void;
+  indentList: (viewRef: React.ElementRef<ComponentType>) => void;
+  outdentList: (viewRef: React.ElementRef<ComponentType>) => void;
   setLink: (viewRef: React.ElementRef<ComponentType>, url: string) => void;
   insertLink: (
     viewRef: React.ElementRef<ComponentType>,
@@ -332,6 +337,9 @@ export const Commands: NativeCommands = codegenNativeCommands<NativeCommands>({
     'toggleH1',
     'toggleH2',
     'toggleH3',
+    'toggleUnorderedList',
+    'indentList',
+    'outdentList',
     'setLink',
     'insertLink',
     'insertMention',

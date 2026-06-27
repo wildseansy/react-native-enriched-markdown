@@ -38,8 +38,10 @@ import com.swmansion.enriched.markdown.input.model.BlockRange
 import com.swmansion.enriched.markdown.input.model.BlockType
 import com.swmansion.enriched.markdown.input.model.FormattingRange
 import com.swmansion.enriched.markdown.input.model.InputFormatterStyle
+import com.swmansion.enriched.markdown.input.model.MAX_LIST_DEPTH
 import com.swmansion.enriched.markdown.input.model.StyleType
 import com.swmansion.enriched.markdown.input.toolbar.InputContextMenu
+import com.swmansion.enriched.markdown.spans.InputBulletSpan
 import com.swmansion.enriched.markdown.spans.InputHeadingSpan
 import com.swmansion.enriched.markdown.utils.input.AutoCapitalizeUtils
 import kotlin.math.ceil
@@ -56,9 +58,10 @@ class EnrichedMarkdownTextInputView(
   val pendingStyles = mutableSetOf<StyleType>()
   val pendingStyleRemovals = mutableSetOf<StyleType>()
 
-  // Heading kind the next typed character should adopt when the cursor sits on an
-  // empty line (no character holds the heading span yet).
+  // Block kind/depth the next typed character should adopt when the cursor sits on
+  // an empty line (no character holds the block span yet).
   private var pendingBlockType: BlockType = BlockType.PARAGRAPH
+  private var pendingListDepth: Int = 0
 
   var isDuringTransaction = false
     private set
@@ -173,6 +176,9 @@ class EnrichedMarkdownTextInputView(
     if (keyCode == KeyEvent.KEYCODE_DEL && deleteLinkBeforeCursor()) {
       return true
     }
+    if (handleListKey(keyCode, event)) {
+      return true
+    }
     return super.onKeyDown(keyCode, event)
   }
 
@@ -265,7 +271,7 @@ class EnrichedMarkdownTextInputView(
             val end = editStart + insertedLength
             t != null && end <= t.length && (editStart until end).any { !t[it].isLineBreak() }
           }
-      normalizeHeadingSpans(insertedHasGlyph)
+      normalizeBlockSpans(insertedHasGlyph, editStart, insertedLength)
 
       applyFormatting()
 
@@ -300,9 +306,10 @@ class EnrichedMarkdownTextInputView(
       } else {
         pendingStyles.clear()
         pendingStyleRemovals.clear()
-        // Heading carries via the span on non-empty lines; clear the pending kind
-        // so it never leaks onto a different (empty) line.
+        // Block kind carries via the span on non-empty lines; clear the pending
+        // kind so it never leaks onto a different (empty) line.
         pendingBlockType = BlockType.PARAGRAPH
+        pendingListDepth = 0
       }
     }
 
@@ -428,6 +435,8 @@ class EnrichedMarkdownTextInputView(
 
   // region Block styles
 
+  private val displayDensity: Float get() = resources.displayMetrics.density
+
   /** Start/end (exclusive) offsets of the line's content containing [offset], excluding newlines. */
   private fun lineBounds(offset: Int): Pair<Int, Int> {
     val s = text ?: return 0 to 0
@@ -440,14 +449,25 @@ class EnrichedMarkdownTextInputView(
     return start to end
   }
 
-  private fun removeHeadingSpans(
+  private fun bulletSpansIn(
+    editable: Editable,
+    start: Int,
+    end: Int,
+  ): Array<InputBulletSpan> = editable.getSpans(start, end, InputBulletSpan::class.java)
+
+  private fun headingSpansIn(
+    editable: Editable,
+    start: Int,
+    end: Int,
+  ): Array<InputHeadingSpan> = editable.getSpans(start, end, InputHeadingSpan::class.java)
+
+  private fun removeBlockSpans(
     editable: Editable,
     start: Int,
     end: Int,
   ) {
-    for (span in editable.getSpans(start, end, InputHeadingSpan::class.java)) {
-      editable.removeSpan(span)
-    }
+    for (span in bulletSpansIn(editable, start, end)) editable.removeSpan(span)
+    for (span in headingSpansIn(editable, start, end)) editable.removeSpan(span)
   }
 
   /** Block kind of the cursor's line, falling back to the pending kind for empty lines. */
@@ -456,22 +476,57 @@ class EnrichedMarkdownTextInputView(
     if (editable.isEmpty()) return pendingBlockType
     val (ls, le) = lineBounds(selectionStart)
     if (le <= ls) return pendingBlockType
-    return editable
-      .getSpans(ls, le, InputHeadingSpan::class.java)
-      .firstOrNull()
-      ?.blockType ?: BlockType.PARAGRAPH
+    headingSpansIn(editable, ls, le).firstOrNull()?.let { return it.blockType }
+    bulletSpansIn(editable, ls, le).firstOrNull()?.let { return it.blockType }
+    return BlockType.PARAGRAPH
   }
 
-  /** Heading ranges currently stored as spans, in text coordinates. */
+  /** List depth of the cursor's line, or the pending depth for an empty line. */
+  fun listDepthAtCursor(): Int {
+    val editable = text ?: return pendingListDepth
+    if (editable.isEmpty()) return pendingListDepth
+    val (ls, le) = lineBounds(selectionStart)
+    if (le <= ls) return pendingListDepth
+    return bulletSpansIn(editable, ls, le).firstOrNull()?.depth ?: 0
+  }
+
+  /** Block ranges (headings + lists) currently stored as spans, in text coordinates. */
   fun currentBlockRanges(): List<BlockRange> {
     val editable = text ?: return emptyList()
-    return editable
-      .getSpans(0, editable.length, InputHeadingSpan::class.java)
-      .mapNotNull { span ->
-        val start = editable.getSpanStart(span)
-        val end = editable.getSpanEnd(span)
-        if (end > start) BlockRange(span.blockType, start, end) else null
-      }
+    val result = mutableListOf<BlockRange>()
+    for (span in headingSpansIn(editable, 0, editable.length)) {
+      val start = editable.getSpanStart(span)
+      val end = editable.getSpanEnd(span)
+      if (end > start) result.add(BlockRange(span.blockType, start, end))
+    }
+    for (span in bulletSpansIn(editable, 0, editable.length)) {
+      val start = editable.getSpanStart(span)
+      val end = editable.getSpanEnd(span)
+      if (end > start) result.add(BlockRange(BlockType.UNORDERED_LIST_ITEM, start, end, span.depth))
+    }
+    return result
+  }
+
+  private fun applyBulletSpan(
+    editable: Editable,
+    start: Int,
+    end: Int,
+    depth: Int,
+  ) {
+    if (end <= start) return
+    removeBlockSpans(editable, start, end)
+    editable.setSpan(InputBulletSpan(depth, displayDensity), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+  }
+
+  private fun applyHeadingSpan(
+    editable: Editable,
+    start: Int,
+    end: Int,
+    type: BlockType,
+  ) {
+    if (end <= start) return
+    removeBlockSpans(editable, start, end)
+    editable.setSpan(InputHeadingSpan(type), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
   }
 
   fun toggleHeading(level: Int) {
@@ -479,69 +534,191 @@ class EnrichedMarkdownTextInputView(
     val target = BlockType.forHeadingLevel(level)
     val turningOff = blockTypeAtCursor() == target
     val newType = if (turningOff) BlockType.PARAGRAPH else target
-
-    // Apply per line so a multi-line selection toggles each line, never the
-    // separating newline (headings are single-line in Markdown).
     val selEnd = selectionEnd
     var cursor = lineBounds(selectionStart).first
     while (cursor <= editable.length) {
       val (ls, le) = lineBounds(cursor)
-      removeHeadingSpans(editable, ls, le)
-      if (newType != BlockType.PARAGRAPH && le > ls) {
-        editable.setSpan(InputHeadingSpan(newType), ls, le, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+      if (le > ls) {
+        if (newType == BlockType.PARAGRAPH) {
+          removeBlockSpans(editable, ls, le)
+        } else {
+          applyHeadingSpan(editable, ls, le, newType)
+        }
       }
       if (le >= selEnd) break
       cursor = le + 1
     }
-
-    // Carry the kind for the cursor's (possibly empty) line into the next keystroke.
     pendingBlockType = newType
-
+    pendingListDepth = 0
     applyFormatting()
     forceScrollToSelection()
     if (emitMarkdown) eventEmitter.emitChangeMarkdown()
     eventEmitter.emitState()
   }
 
-  /**
-   * Keeps heading spans well-formed after an edit: seeds a span for the first
-   * character typed on a freshly-toggled empty line, re-clamps every heading
-   * span to its line's content (so typing extends it and it never crosses a
-   * newline), and ends a heading when a newline is inserted.
-   */
-  private fun normalizeHeadingSpans(insertedHasGlyph: Boolean) {
+  fun toggleUnorderedList() {
     val editable = text ?: return
-
-    if (insertedHasGlyph && pendingBlockType != BlockType.PARAGRAPH) {
-      val (ls, le) = lineBounds(selectionStart)
-      if (le > ls && editable.getSpans(ls, le, InputHeadingSpan::class.java).isEmpty()) {
-        editable.setSpan(InputHeadingSpan(pendingBlockType), ls, le, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+    val turningOff = blockTypeAtCursor() == BlockType.UNORDERED_LIST_ITEM
+    val selEnd = selectionEnd
+    var cursor = lineBounds(selectionStart).first
+    while (cursor <= editable.length) {
+      val (ls, le) = lineBounds(cursor)
+      if (turningOff) {
+        removeBlockSpans(editable, ls, le)
+      } else if (le > ls) {
+        applyBulletSpan(editable, ls, le, 0)
       }
+      if (le >= selEnd) break
+      cursor = le + 1
     }
-
-    for (span in editable.getSpans(0, editable.length, InputHeadingSpan::class.java)) {
-      val (ls, le) = lineBounds(editable.getSpanStart(span))
-      editable.removeSpan(span)
-      if (le > ls) {
-        editable.setSpan(InputHeadingSpan(span.blockType), ls, le, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-      }
-    }
-
-    if (!insertedHasGlyph) pendingBlockType = BlockType.PARAGRAPH
+    pendingBlockType = if (turningOff) BlockType.PARAGRAPH else BlockType.UNORDERED_LIST_ITEM
+    pendingListDepth = 0
+    applyFormatting()
+    forceScrollToSelection()
+    if (emitMarkdown) eventEmitter.emitChangeMarkdown()
+    eventEmitter.emitState()
   }
 
-  /** Writes parsed heading ranges into the text as spans. */
+  fun indentList() = changeListDepthBy(1)
+
+  fun outdentList() = changeListDepthBy(-1)
+
+  private fun changeListDepthBy(delta: Int) {
+    if (blockTypeAtCursor() != BlockType.UNORDERED_LIST_ITEM) return
+    val editable = text ?: return
+    val selEnd = selectionEnd
+    var cursor = lineBounds(selectionStart).first
+    while (cursor <= editable.length) {
+      val (ls, le) = lineBounds(cursor)
+      val span = bulletSpansIn(editable, ls, le).firstOrNull()
+      if (span != null && le > ls) {
+        val newDepth = (span.depth + delta).coerceIn(0, MAX_LIST_DEPTH)
+        applyBulletSpan(editable, ls, le, newDepth)
+      }
+      if (le >= selEnd) break
+      cursor = le + 1
+    }
+    pendingListDepth = (listDepthAtCursor() + delta).coerceIn(0, MAX_LIST_DEPTH)
+    applyFormatting()
+    forceScrollToSelection()
+    if (emitMarkdown) eventEmitter.emitChangeMarkdown()
+    eventEmitter.emitState()
+  }
+
+  /** Writes parsed block ranges into the text as spans. */
   private fun applyBlockRanges(blockRanges: List<BlockRange>) {
     val editable = text ?: return
-    removeHeadingSpans(editable, 0, editable.length)
+    removeBlockSpans(editable, 0, editable.length)
     for (range in blockRanges) {
-      if (range.type == BlockType.PARAGRAPH) continue
       val start = range.start.coerceIn(0, editable.length)
       val end = range.end.coerceIn(start, editable.length)
-      if (end > start) {
-        editable.setSpan(InputHeadingSpan(range.type), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+      if (end <= start) continue
+      when (range.type) {
+        BlockType.PARAGRAPH -> {}
+
+        BlockType.UNORDERED_LIST_ITEM -> {
+          editable.setSpan(InputBulletSpan(range.depth, displayDensity), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+
+        else -> {
+          editable.setSpan(InputHeadingSpan(range.type), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
       }
     }
+  }
+
+  /**
+   * Keeps block spans well-formed after an edit: seeds a span for the first
+   * character typed on a freshly-toggled empty line, continues a list onto a new
+   * line (headings end; empty list items exit), and re-clamps every block span to
+   * its line's content so typing extends it without crossing a newline.
+   */
+  private fun normalizeBlockSpans(
+    insertedHasGlyph: Boolean,
+    editStart: Int,
+    insertedLength: Int,
+  ) {
+    val editable = text ?: return
+
+    if (insertedHasGlyph) {
+      if (pendingBlockType != BlockType.PARAGRAPH) {
+        val (ls, le) = lineBounds(selectionStart)
+        if (le > ls && headingSpansIn(editable, ls, le).isEmpty() && bulletSpansIn(editable, ls, le).isEmpty()) {
+          if (pendingBlockType == BlockType.UNORDERED_LIST_ITEM) {
+            editable.setSpan(InputBulletSpan(pendingListDepth, displayDensity), ls, le, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+          } else {
+            editable.setSpan(InputHeadingSpan(pendingBlockType), ls, le, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+          }
+        }
+      }
+    } else if (insertedLength > 0) {
+      // Newline: headings end; lists continue (exiting on an empty item).
+      val prevLineEnd = editStart
+      var prevLineStart = prevLineEnd
+      while (prevLineStart > 0 && editable[prevLineStart - 1] != '\n') prevLineStart--
+      val prevContentLength = (prevLineEnd - prevLineStart).coerceAtLeast(0)
+
+      var continueList = false
+      var prevDepth = 0
+      if (prevContentLength > 0) {
+        val span = bulletSpansIn(editable, prevLineStart, prevLineEnd).firstOrNull()
+        if (span != null) {
+          continueList = true
+          prevDepth = span.depth
+        }
+      } else {
+        continueList = pendingBlockType == BlockType.UNORDERED_LIST_ITEM
+        prevDepth = pendingListDepth
+      }
+
+      if (continueList && prevContentLength > 0) {
+        pendingBlockType = BlockType.UNORDERED_LIST_ITEM
+        pendingListDepth = prevDepth
+      } else {
+        pendingBlockType = BlockType.PARAGRAPH
+        pendingListDepth = 0
+      }
+    }
+
+    // Re-clamp every block span to its line's content.
+    for (span in headingSpansIn(editable, 0, editable.length)) {
+      val (ls, le) = lineBounds(editable.getSpanStart(span))
+      val type = span.blockType
+      editable.removeSpan(span)
+      if (le > ls) editable.setSpan(InputHeadingSpan(type), ls, le, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+    }
+    for (span in bulletSpansIn(editable, 0, editable.length)) {
+      val (ls, le) = lineBounds(editable.getSpanStart(span))
+      val depth = span.depth
+      editable.removeSpan(span)
+      if (le > ls) editable.setSpan(InputBulletSpan(depth, displayDensity), ls, le, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+    }
+  }
+
+  /**
+   * Tab indents the current list item (Shift+Tab outdents); Backspace at the start
+   * of an item outdents, then removes the list marker at depth 0. Keeps list
+   * nesting keyboard-editable on hardware keyboards. Returns true if handled.
+   */
+  private fun handleListKey(
+    keyCode: Int,
+    event: KeyEvent?,
+  ): Boolean {
+    if (blockTypeAtCursor() != BlockType.UNORDERED_LIST_ITEM) return false
+    when (keyCode) {
+      KeyEvent.KEYCODE_TAB -> {
+        if (event?.isShiftPressed == true) outdentList() else indentList()
+        return true
+      }
+
+      KeyEvent.KEYCODE_DEL -> {
+        if (selectionStart == selectionEnd && selectionStart == lineBounds(selectionStart).first) {
+          if (listDepthAtCursor() > 0) outdentList() else toggleUnorderedList()
+          return true
+        }
+      }
+    }
+    return false
   }
 
   // endregion

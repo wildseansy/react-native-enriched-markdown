@@ -73,6 +73,7 @@ export interface StyleState {
   h1: { isActive: boolean };
   h2: { isActive: boolean };
   h3: { isActive: boolean };
+  unorderedList: { isActive: boolean };
 }
 
 export interface ContextMenuItem {
@@ -109,6 +110,9 @@ export interface EnrichedMarkdownTextInputInstance {
   toggleH1: () => void;
   toggleH2: () => void;
   toggleH3: () => void;
+  toggleUnorderedList: () => void;
+  indentList: () => void;
+  outdentList: () => void;
   setLink: (url: string) => void;
   insertLink: (text: string, url: string) => void;
   insertMention: (displayText: string, url: string) => void;
@@ -372,6 +376,7 @@ export const EnrichedMarkdownTextInput = ({
         h1,
         h2,
         h3,
+        unorderedList,
       } = e.nativeEvent;
       onChangeState?.({
         bold,
@@ -383,6 +388,7 @@ export const EnrichedMarkdownTextInput = ({
         h1,
         h2,
         h3,
+        unorderedList,
       });
     },
     [onChangeState]
@@ -491,6 +497,9 @@ export const EnrichedMarkdownTextInput = ({
       toggleH1: () => Commands.toggleH1(commandRef),
       toggleH2: () => Commands.toggleH2(commandRef),
       toggleH3: () => Commands.toggleH3(commandRef),
+      toggleUnorderedList: () => Commands.toggleUnorderedList(commandRef),
+      indentList: () => Commands.indentList(commandRef),
+      outdentList: () => Commands.outdentList(commandRef),
       setLink: (url) => Commands.setLink(commandRef, url),
       insertLink: (text, url) => Commands.insertLink(commandRef, text, url),
       insertMention: (displayText, url) =>

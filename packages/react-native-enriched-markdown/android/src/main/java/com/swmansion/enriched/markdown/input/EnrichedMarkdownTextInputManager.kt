@@ -426,6 +426,18 @@ class EnrichedMarkdownTextInputManager :
     view?.toggleHeading(3)
   }
 
+  override fun toggleUnorderedList(view: EnrichedMarkdownTextInputView?) {
+    view?.toggleUnorderedList()
+  }
+
+  override fun indentList(view: EnrichedMarkdownTextInputView?) {
+    view?.indentList()
+  }
+
+  override fun outdentList(view: EnrichedMarkdownTextInputView?) {
+    view?.outdentList()
+  }
+
   override fun setLink(
     view: EnrichedMarkdownTextInputView?,
     url: String?,

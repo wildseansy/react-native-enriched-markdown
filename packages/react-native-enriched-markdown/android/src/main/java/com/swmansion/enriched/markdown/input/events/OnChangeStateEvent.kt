@@ -16,6 +16,7 @@ class OnChangeStateEvent(
   private val isH1: Boolean,
   private val isH2: Boolean,
   private val isH3: Boolean,
+  private val isUnorderedList: Boolean,
 ) : Event<OnChangeStateEvent>(surfaceId, viewId) {
   override fun getEventName(): String = EVENT_NAME
 
@@ -56,6 +57,10 @@ class OnChangeStateEvent(
       putMap(
         "h3",
         Arguments.createMap().apply { putBoolean("isActive", isH3) },
+      )
+      putMap(
+        "unorderedList",
+        Arguments.createMap().apply { putBoolean("isActive", isUnorderedList) },
       )
     }
 

@@ -3,6 +3,7 @@ package com.swmansion.enriched.markdown.input.formatting
 import com.swmansion.enriched.markdown.input.model.BlockRange
 import com.swmansion.enriched.markdown.input.model.BlockType
 import com.swmansion.enriched.markdown.input.model.FormattingRange
+import com.swmansion.enriched.markdown.input.model.MAX_LIST_DEPTH
 import com.swmansion.enriched.markdown.input.model.StyleType
 import com.swmansion.enriched.markdown.parser.MarkdownASTNode
 import com.swmansion.enriched.markdown.parser.MarkdownASTNode.NodeType
@@ -43,7 +44,7 @@ object InputParser {
           .toList(),
       )
 
-    walkNode(ast, plainText, ranges, blockRanges, ArrayDeque(), blankRuns)
+    walkNode(ast, plainText, ranges, blockRanges, ArrayDeque(), blankRuns, 0)
 
     return ParseResult(plainText.toString(), ranges, blockRanges)
   }
@@ -55,6 +56,7 @@ object InputParser {
     blockRanges: MutableList<BlockRange>,
     activeStyles: ArrayDeque<ActiveStyle>,
     blankRuns: ArrayDeque<Int>,
+    listDepth: Int,
   ) {
     val styleType = nodeTypeToStyleType(node.type)
 
@@ -67,6 +69,17 @@ object InputParser {
     // captured here already excludes them — record the rendered range only.
     val headingStart = if (node.type == NodeType.Heading) plainText.length else -1
 
+    // An unordered list increments the nesting depth for its items. A list item
+    // captures its own first line (its text precedes any nested sublist).
+    val childListDepth = if (node.type == NodeType.UnorderedList) listDepth + 1 else listDepth
+
+    // Each list item starts on its own line; md4c emits no separator between
+    // sibling items or before a nested sublist.
+    if (node.type == NodeType.ListItem && plainText.isNotEmpty() && !plainText.endsWith("\n")) {
+      plainText.append("\n")
+    }
+    val itemStart = if (node.type == NodeType.ListItem) plainText.length else -1
+
     if (node.type == NodeType.Text) {
       plainText.append(node.content)
     } else if (node.type == NodeType.LineBreak) {
@@ -74,17 +87,30 @@ object InputParser {
     }
 
     for ((index, child) in node.children.withIndex()) {
-      // Keep the source's blank lines between top-level blocks (md4c drops them, iOS keeps them).
-      if (index > 0 && child.type.isTopLevelBlock() && plainText.isNotEmpty()) {
+      // Keep the source's blank lines between genuinely top-level blocks (md4c
+      // drops them, iOS keeps them). Inside a list, items are separated by a
+      // single newline above, not blank lines.
+      if (index > 0 && listDepth == 0 && child.type.isTopLevelBlock() && plainText.isNotEmpty()) {
         plainText.append("\n".repeat(blankRuns.removeFirstOrNull() ?: 2))
       }
-      walkNode(child, plainText, ranges, blockRanges, activeStyles, blankRuns)
+      walkNode(child, plainText, ranges, blockRanges, activeStyles, blankRuns, childListDepth)
     }
 
     if (headingStart >= 0) {
       val level = node.getAttribute("level")?.toIntOrNull() ?: 1
       if (level in 1..3 && plainText.length > headingStart) {
         blockRanges.add(BlockRange(BlockType.forHeadingLevel(level), headingStart, plainText.length))
+      }
+    }
+
+    if (itemStart >= 0) {
+      // The item's own line ends at the first newline after its start (nested
+      // sublists live on later lines).
+      var lineEnd = plainText.indexOf('\n', itemStart)
+      if (lineEnd < 0) lineEnd = plainText.length
+      if (lineEnd > itemStart) {
+        val depth = (listDepth - 1).coerceIn(0, MAX_LIST_DEPTH)
+        blockRanges.add(BlockRange(BlockType.UNORDERED_LIST_ITEM, itemStart, lineEnd, depth))
       }
     }
 
