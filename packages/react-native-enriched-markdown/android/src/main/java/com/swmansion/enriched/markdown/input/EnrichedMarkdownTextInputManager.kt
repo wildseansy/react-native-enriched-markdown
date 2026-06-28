@@ -120,7 +120,7 @@ class EnrichedMarkdownTextInputManager :
     view: EnrichedMarkdownTextInputView?,
     value: String?,
   ) {
-    view?.hint = value
+    view?.setUserHint(value)
   }
 
   @ReactProp(name = "placeholderTextColor", customType = "Color")

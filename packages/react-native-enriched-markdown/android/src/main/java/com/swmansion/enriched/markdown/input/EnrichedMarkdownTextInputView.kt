@@ -73,6 +73,21 @@ class EnrichedMarkdownTextInputView(
   // Extra vertical spacing (px) added above each list item; 0 = none.
   private var listItemSpacingPx = 0f
 
+  // The consumer-set placeholder. Hidden while a bullet is drawn on the empty
+  // editor so the marker doesn't overlap it (mirrors the iOS placeholder hide).
+  private var userHint: CharSequence? = null
+
+  fun setUserHint(value: CharSequence?) {
+    userHint = value
+    syncHintVisibility()
+  }
+
+  private fun syncHintVisibility() {
+    val hideForBullet = text.isNullOrEmpty() && pendingBlockType == BlockType.UNORDERED_LIST_ITEM
+    val target: CharSequence? = if (hideForBullet) "" else userHint
+    if (hint != target) super.setHint(target)
+  }
+
   var isDuringTransaction = false
     private set
 
@@ -225,7 +240,18 @@ class EnrichedMarkdownTextInputView(
     val savedColor = paint.color
     paint.color = currentTextColor
     InputBulletSpan(pendingListDepth, displayDensity).drawLeadingMargin(
-      canvas, paint, x, dir, top, baseline, bottom, null, 0, 0, true, textLayout,
+      canvas,
+      paint,
+      x,
+      dir,
+      top,
+      baseline,
+      bottom,
+      null,
+      0,
+      0,
+      true,
+      textLayout,
     )
     paint.color = savedColor
   }
@@ -336,6 +362,7 @@ class EnrichedMarkdownTextInputView(
       isTextChanging = false
       didTextChangeRecently = true
       lastProcessedText = currentText
+      syncHintVisibility()
     } finally {
       isProcessingTextChange = false
     }
@@ -372,6 +399,7 @@ class EnrichedMarkdownTextInputView(
     updateActiveMention()
     eventEmitter.emitState()
     eventEmitter.emitCaretRectChangeIfNeeded()
+    syncHintVisibility()
   }
 
   private fun applyPendingStyles(
@@ -653,6 +681,7 @@ class EnrichedMarkdownTextInputView(
     applyFormatting()
     forceScrollToSelection()
     invalidate() // redraw the empty-line marker (no span change to trigger it)
+    syncHintVisibility()
     if (emitMarkdown) eventEmitter.emitChangeMarkdown()
     eventEmitter.emitState()
   }
