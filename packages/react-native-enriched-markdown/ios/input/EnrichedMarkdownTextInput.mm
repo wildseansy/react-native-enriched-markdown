@@ -88,6 +88,15 @@ using namespace facebook::react;
   ENRMInputBlockType _preEditBlockType;
   NSInteger _preEditListDepth;
 
+  // Length of text the pending edit will replace (range.length from
+  // shouldChangeTextInRange). A non-zero value means existing characters — which
+  // may carry the line's block attribute — are being overwritten, as with
+  // autocorrect or paste. handleTextChanged models edits off the caret selection
+  // and underestimates the inserted span for such replacements, so it heals the
+  // line's block attribute separately when this is set.
+  NSUInteger _preEditReplacementLength;
+  BOOL _preEditReplacementHasNewline;
+
   std::optional<CGRect> _prevCaretRect;
 
 #if TARGET_OS_OSX
@@ -540,7 +549,12 @@ using namespace facebook::react;
 
 - (void)updatePlaceholderVisibility
 {
-  _placeholderLabel.hidden = (ENRMGetPlainText(_textView).length > 0);
+  // Hide the placeholder while a bullet is drawn on the empty editor (block just
+  // toggled, nothing typed yet) — otherwise the marker overlaps the placeholder.
+  BOOL hasText = ENRMGetPlainText(_textView).length > 0;
+  BOOL emptyListMarker =
+      !hasText && [self blockTypeForCursorParagraph] == ENRMInputBlockTypeUnorderedListItem;
+  _placeholderLabel.hidden = hasText || emptyListMarker;
 }
 
 #pragma mark - Markdown import
@@ -1301,6 +1315,9 @@ using namespace facebook::react;
     [_layoutManager ensureLayoutForTextContainer:_textView.textContainer];
   }
   ENRMSetNeedsDisplay(_textView);
+
+  // The empty-editor bullet would otherwise overlap the placeholder.
+  [self updatePlaceholderVisibility];
 }
 
 - (void)resetPendingStylesForSelectionChange
@@ -1865,6 +1882,17 @@ using namespace facebook::react;
     }
   }
 
+  // Autocorrect/paste replaces existing characters (range.length > 0); the edit
+  // model above is keyed off the caret selection and underestimates the inserted
+  // span for such replacements, so the block re-stamp can be skipped entirely.
+  // Heal the edited line's block attribute directly. A replacement that inserts a
+  // newline is a structural change handled above, so skip it here.
+  if (_preEditReplacementLength > 0 && !_preEditReplacementHasNewline) {
+    [self healCurrentLineBlockAttribute];
+  }
+  _preEditReplacementLength = 0;
+  _preEditReplacementHasNewline = NO;
+
   _lastTextLength = newLength;
 
 #if !TARGET_OS_OSX
@@ -1964,6 +1992,8 @@ using namespace facebook::react;
     return NO;
   }
   _preEditSelectedRange = _lastSelectedRange;
+  _preEditReplacementLength = range.length;
+  _preEditReplacementHasNewline = [text rangeOfCharacterFromSet:[NSCharacterSet newlineCharacterSet]].location != NSNotFound;
   [self capturePreEditBlockForRange:range];
   _isTextChanging = YES;
   [self stripLinkTypingAttributes];
@@ -1996,6 +2026,60 @@ using namespace facebook::react;
   if (_preEditBlockType == ENRMInputBlockTypeUnorderedListItem) {
     id depthValue = [storage attribute:ENRMListDepthAttributeName atIndex:paragraphRange.location effectiveRange:NULL];
     _preEditListDepth = depthValue ? [depthValue integerValue] : 0;
+  }
+}
+
+/// Re-applies the edited line's block attribute across its whole content after an
+/// in-line replacement (autocorrect/paste) that may have overwritten the
+/// attribute-bearing characters. Prefers any block attribute that survived
+/// somewhere on the line, falling back to the kind captured before the edit.
+- (void)healCurrentLineBlockAttribute
+{
+  NSTextStorage *storage = _textView.textStorage;
+  if (storage.length == 0) {
+    return;
+  }
+  NSString *plain = storage.string;
+  NSUInteger loc = MIN(_textView.selectedRange.location, plain.length);
+  NSRange content = [plain paragraphRangeForRange:NSMakeRange(loc, 0)];
+  if (content.length > 0 && [plain characterAtIndex:NSMaxRange(content) - 1] == '\n') {
+    content.length -= 1;
+  }
+  if (content.length == 0) {
+    return;
+  }
+
+  __block ENRMInputBlockType type = ENRMInputBlockTypeParagraph;
+  __block NSInteger depth = 0;
+  [storage enumerateAttribute:ENRMBlockTypeAttributeName
+                      inRange:content
+                      options:0
+                   usingBlock:^(id value, NSRange attrRange, BOOL *stop) {
+                     if (value) {
+                       type = (ENRMInputBlockType)[value integerValue];
+                       if (type == ENRMInputBlockTypeUnorderedListItem) {
+                         id depthValue = [storage attribute:ENRMListDepthAttributeName
+                                                    atIndex:attrRange.location
+                                             effectiveRange:NULL];
+                         depth = depthValue ? [depthValue integerValue] : 0;
+                       }
+                       *stop = YES;
+                     }
+                   }];
+
+  if (type == ENRMInputBlockTypeParagraph && _preEditBlockType != ENRMInputBlockTypeParagraph) {
+    type = _preEditBlockType;
+    depth = _preEditListDepth;
+  }
+  if (type == ENRMInputBlockTypeParagraph) {
+    return;
+  }
+
+  [storage addAttribute:ENRMBlockTypeAttributeName value:@(type) range:content];
+  if (type == ENRMInputBlockTypeUnorderedListItem) {
+    [storage addAttribute:ENRMListDepthAttributeName value:@(depth) range:content];
+  } else {
+    [storage removeAttribute:ENRMListDepthAttributeName range:content];
   }
 }
 

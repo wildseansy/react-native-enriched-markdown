@@ -2,8 +2,10 @@
 #import "ENRMInputBlockType.h"
 #import <UIKit/UIKit.h>
 
-/// Gap between the bullet glyph and the start of the item text.
-static const CGFloat kBulletGap = 5.0;
+/// Gap between the bullet glyph's center and the start of the item text. Sized so
+/// the marker sits roughly mid-column (text indents by ENRMListMarkerWidth),
+/// matching the Android spacing.
+static const CGFloat kBulletGap = 9.0;
 
 @implementation ENRMInputLayoutManager
 
