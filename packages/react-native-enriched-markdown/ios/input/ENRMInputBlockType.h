@@ -14,10 +14,6 @@ static const CGFloat ENRMListMarkerWidth = 18.0;
 /// Maximum supported list nesting depth (0-based), so indentation stays sane.
 static const NSInteger ENRMMaxListDepth = 5;
 
-/// Vertical gap added after each list item (points) so bullets read as visually
-/// separate rows rather than a dense block.
-static const CGFloat ENRMListItemSpacing = 6.0;
-
 /// Paragraph-level block kinds supported by the editor. Unlike inline styles
 /// (bold, italic) which apply to character ranges, block styles apply to whole
 /// lines and are mutually exclusive per line.

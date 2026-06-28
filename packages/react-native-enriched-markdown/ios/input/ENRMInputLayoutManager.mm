@@ -134,7 +134,7 @@ static const CGFloat kBulletGap = 9.0;
                                    // fragment) so an empty list line's bullet lands exactly where the
                                    // first typed glyph's bullet will.
                                    CGFloat baselineOffset = isEmptyListLine
-                                                                ? ENRMListItemSpacing + font.ascender
+                                                                ? self.listItemSpacing + font.ascender
                                                                 : [self locationForGlyphAtIndex:glyphRange.location].y;
                                    CGFloat baselineY = origin.y + rect.origin.y + baselineOffset;
                                    CGFloat markerX = origin.x + usedRect.origin.x - kBulletGap;

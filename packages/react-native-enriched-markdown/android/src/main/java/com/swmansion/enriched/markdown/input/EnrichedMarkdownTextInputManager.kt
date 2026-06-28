@@ -231,6 +231,14 @@ class EnrichedMarkdownTextInputManager :
     }
   }
 
+  @ReactProp(name = "listItemSpacing", defaultDouble = 0.0)
+  override fun setListItemSpacing(
+    view: EnrichedMarkdownTextInputView?,
+    value: Double,
+  ) {
+    view?.setListItemSpacingFromProps(value.toFloat())
+  }
+
   @ReactProp(name = "fontFamily")
   override fun setFontFamily(
     view: EnrichedMarkdownTextInputView?,

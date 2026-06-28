@@ -44,6 +44,7 @@ import com.swmansion.enriched.markdown.input.model.StyleType
 import com.swmansion.enriched.markdown.input.toolbar.InputContextMenu
 import com.swmansion.enriched.markdown.spans.InputBulletSpan
 import com.swmansion.enriched.markdown.spans.InputHeadingSpan
+import com.swmansion.enriched.markdown.spans.InputListItemSpacingSpan
 import com.swmansion.enriched.markdown.utils.input.AutoCapitalizeUtils
 import kotlin.math.ceil
 
@@ -68,6 +69,9 @@ class EnrichedMarkdownTextInputView(
   // triggers doesn't immediately clear the pending kind (which is the only thing
   // keeping the marker visible until a character is typed).
   private var keepPendingBlockOnEmptyLine = false
+
+  // Extra vertical spacing (px) added above each list item; 0 = none.
+  private var listItemSpacingPx = 0f
 
   var isDuringTransaction = false
     private set
@@ -519,6 +523,7 @@ class EnrichedMarkdownTextInputView(
   ) {
     for (span in bulletSpansIn(editable, start, end)) editable.removeSpan(span)
     for (span in headingSpansIn(editable, start, end)) editable.removeSpan(span)
+    for (span in editable.getSpans(start, end, InputListItemSpacingSpan::class.java)) editable.removeSpan(span)
   }
 
   /** Block kind of the cursor's line, falling back to the pending kind for empty lines. */
@@ -567,6 +572,26 @@ class EnrichedMarkdownTextInputView(
     if (end <= start) return
     removeBlockSpans(editable, start, end)
     editable.setSpan(InputBulletSpan(depth, displayDensity), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+    applyListItemSpacingSpan(editable, start, end)
+  }
+
+  /**
+   * Adds the configured leading spacing above a list item. Applied to only the
+   * first character so it affects just the item's first visual line, not wrapped
+   * continuations. No-op when spacing is 0.
+   */
+  private fun applyListItemSpacingSpan(
+    editable: Editable,
+    start: Int,
+    end: Int,
+  ) {
+    if (listItemSpacingPx <= 0f || end <= start) return
+    editable.setSpan(
+      InputListItemSpacingSpan(listItemSpacingPx.toInt()),
+      start,
+      (start + 1).coerceAtMost(end),
+      Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+    )
   }
 
   private fun applyHeadingSpan(
@@ -673,6 +698,7 @@ class EnrichedMarkdownTextInputView(
 
         BlockType.UNORDERED_LIST_ITEM -> {
           editable.setSpan(InputBulletSpan(range.depth, displayDensity), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+          applyListItemSpacingSpan(editable, start, end)
         }
 
         else -> {
@@ -701,6 +727,7 @@ class EnrichedMarkdownTextInputView(
         if (le > ls && headingSpansIn(editable, ls, le).isEmpty() && bulletSpansIn(editable, ls, le).isEmpty()) {
           if (pendingBlockType == BlockType.UNORDERED_LIST_ITEM) {
             editable.setSpan(InputBulletSpan(pendingListDepth, displayDensity), ls, le, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            applyListItemSpacingSpan(editable, ls, le)
           } else {
             editable.setSpan(InputHeadingSpan(pendingBlockType), ls, le, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
           }
@@ -746,7 +773,11 @@ class EnrichedMarkdownTextInputView(
       val (ls, le) = lineBounds(editable.getSpanStart(span))
       val depth = span.depth
       editable.removeSpan(span)
-      if (le > ls) editable.setSpan(InputBulletSpan(depth, displayDensity), ls, le, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+      if (le > ls) {
+        editable.setSpan(InputBulletSpan(depth, displayDensity), ls, le, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        for (s in editable.getSpans(ls, le, InputListItemSpacingSpan::class.java)) editable.removeSpan(s)
+        applyListItemSpacingSpan(editable, ls, le)
+      }
     }
   }
 
@@ -963,6 +994,21 @@ class EnrichedMarkdownTextInputView(
     val sizePx = ceil(PixelUtil.toPixelFromSP(size))
     setTextSize(TypedValue.COMPLEX_UNIT_PX, sizePx)
     layoutManager.invalidateLayout()
+  }
+
+  fun setListItemSpacingFromProps(spacing: Float) {
+    listItemSpacingPx = if (spacing > 0f) PixelUtil.toPixelFromDIP(spacing) else 0f
+    val editable = text ?: return
+    // Re-stamp existing list items so the spacing span is added/removed/resized.
+    for (span in editable.getSpans(0, editable.length, InputListItemSpacingSpan::class.java)) {
+      editable.removeSpan(span)
+    }
+    if (listItemSpacingPx > 0f) {
+      for (span in bulletSpansIn(editable, 0, editable.length)) {
+        applyListItemSpacingSpan(editable, editable.getSpanStart(span), editable.getSpanEnd(span))
+      }
+    }
+    invalidate()
   }
 
   fun setColorFromProps(colorInt: Int?) {

@@ -267,7 +267,7 @@ static CGFloat headingScaleForLevel(NSInteger level)
                          // separate rows. Spacing goes before (not after) so a
                          // freshly continued empty line already reserves it without
                          // inflating its caret.
-                         paragraph.paragraphSpacingBefore = ENRMListItemSpacing;
+                         paragraph.paragraphSpacingBefore = style.listItemSpacing;
 
                          NSRange paragraphRange = [plainString paragraphRangeForRange:attrRange];
                          [textStorage addAttribute:NSParagraphStyleAttributeName value:paragraph range:paragraphRange];

@@ -1287,7 +1287,7 @@ using namespace facebook::react;
     // Gap goes ABOVE each item (paragraphSpacingBefore), not below, so it's
     // present on the empty line immediately without inflating the empty
     // paragraph's caret (which would make the caret shrink on the first keystroke).
-    paragraph.paragraphSpacingBefore = ENRMListItemSpacing;
+    paragraph.paragraphSpacingBefore = _formatterStyle.listItemSpacing;
     attrs[NSParagraphStyleAttributeName] = paragraph;
   } else {
     [attrs removeObjectForKey:ENRMBlockTypeAttributeName];
@@ -1328,7 +1328,7 @@ using namespace facebook::react;
         CGFloat indent = depth * ENRMListIndentPerDepth + ENRMListMarkerWidth;
         paragraph.firstLineHeadIndent = indent;
         paragraph.headIndent = indent;
-        paragraph.paragraphSpacingBefore = ENRMListItemSpacing;
+        paragraph.paragraphSpacingBefore = _formatterStyle.listItemSpacing;
         NSTextStorage *storage = _textView.textStorage;
         [storage beginEditing];
         [storage addAttribute:NSParagraphStyleAttributeName value:paragraph range:paragraphRange];
@@ -1341,6 +1341,7 @@ using namespace facebook::react;
   _layoutManager.emptyBulletLocation = location;
   _layoutManager.emptyBulletFont = _formatterStyle.baseFont;
   _layoutManager.emptyBulletColor = _formatterStyle.baseTextColor;
+  _layoutManager.listItemSpacing = _formatterStyle.listItemSpacing;
 
   // An empty editor never runs the formatter (it early-returns at length 0), so
   // the trailing/extra line fragment the marker draws into isn't laid out yet —
