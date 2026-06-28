@@ -2185,6 +2185,23 @@ using namespace facebook::react;
   return NO;
 }
 
+- (BOOL)handleBackspaceAtDocumentStart
+{
+  NSRange selection = _textView.selectedRange;
+  if (selection.location != 0 || selection.length != 0) {
+    return NO;
+  }
+  if ([self blockTypeForCursorParagraph] != ENRMInputBlockTypeUnorderedListItem) {
+    return NO;
+  }
+  if ([self listDepthForCursorParagraph] > 0) {
+    [self outdentList];
+  } else {
+    [self toggleUnorderedList];
+  }
+  return YES;
+}
+
 - (void)textViewDidChange:(UITextView *)textView
 {
   if (_isApplyingFormatting) {

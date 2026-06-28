@@ -167,8 +167,10 @@ static const CGFloat kBulletGap = 9.0;
   UIColor *color = self.emptyBulletColor ?: [UIColor labelColor];
   CGFloat headIndent = self.emptyBulletDepth * ENRMListIndentPerDepth + ENRMListMarkerWidth;
   CGFloat markerX = inset.left + headIndent - kBulletGap;
-  // The list line's leading paragraph spacing pushes the first line down.
-  CGFloat centerY = inset.top + ENRMListItemSpacing + font.lineHeight / 2.0;
+  // This path only ever draws the wholly-empty editor's first line, and TextKit
+  // doesn't apply paragraphSpacingBefore to the first paragraph, so no spacing
+  // offset here.
+  CGFloat centerY = inset.top + font.lineHeight / 2.0;
   [self drawBulletAtX:markerX centerY:centerY depth:self.emptyBulletDepth font:font color:color];
 }
 
