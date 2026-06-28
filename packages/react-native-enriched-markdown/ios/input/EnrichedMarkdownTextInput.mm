@@ -82,6 +82,12 @@ using namespace facebook::react;
   ENRMInputBlockType _pendingBlockType;
   NSInteger _pendingListDepth;
 
+  // Block kind/depth of the edited line captured before a text change, so it can
+  // be restored if the edit (e.g. autocorrect) replaced the attribute-bearing
+  // characters.
+  ENRMInputBlockType _preEditBlockType;
+  NSInteger _preEditListDepth;
+
   std::optional<CGRect> _prevCaretRect;
 
 #if TARGET_OS_OSX
@@ -637,6 +643,8 @@ using namespace facebook::react;
   }
 
   _isApplyingFormatting = NO;
+
+  [self updateEmptyBulletMarker];
 }
 
 - (void)applyWritingDirection
@@ -1239,14 +1247,60 @@ using namespace facebook::react;
   if (headingLevel > 0) {
     attrs[ENRMBlockTypeAttributeName] = @(ENRMBlockTypeForHeadingLevel(headingLevel));
     [attrs removeObjectForKey:ENRMListDepthAttributeName];
+    [attrs removeObjectForKey:NSParagraphStyleAttributeName];
   } else if (cursorBlock == ENRMInputBlockTypeUnorderedListItem) {
+    NSInteger depth = [self listDepthForCursorParagraph];
     attrs[ENRMBlockTypeAttributeName] = @(ENRMInputBlockTypeUnorderedListItem);
-    attrs[ENRMListDepthAttributeName] = @([self listDepthForCursorParagraph]);
+    attrs[ENRMListDepthAttributeName] = @(depth);
+    // Indent the caret on an empty list line so it (and its bullet) align with a
+    // typed item.
+    NSMutableParagraphStyle *paragraph = [[NSMutableParagraphStyle alloc] init];
+    CGFloat indent = depth * ENRMListIndentPerDepth + ENRMListMarkerWidth;
+    paragraph.firstLineHeadIndent = indent;
+    paragraph.headIndent = indent;
+    attrs[NSParagraphStyleAttributeName] = paragraph;
   } else {
     [attrs removeObjectForKey:ENRMBlockTypeAttributeName];
     [attrs removeObjectForKey:ENRMListDepthAttributeName];
+    [attrs removeObjectForKey:NSParagraphStyleAttributeName];
   }
   _textView.typingAttributes = attrs;
+}
+
+/// Tells the layout manager to draw a bullet on the cursor's empty list line (it
+/// has no character to anchor the marker to). Cleared whenever the cursor isn't
+/// on an empty list line.
+- (void)updateEmptyBulletMarker
+{
+  NSString *text = ENRMGetPlainText(_textView);
+  NSRange selection = _textView.selectedRange;
+  BOOL show = NO;
+  NSUInteger location = 0;
+  NSInteger depth = 0;
+
+  if (selection.length == 0 && [self blockTypeForCursorParagraph] == ENRMInputBlockTypeUnorderedListItem) {
+    NSRange paragraphRange = text.length == 0 ? NSMakeRange(0, 0) : [text paragraphRangeForRange:selection];
+    NSString *paragraphText = text.length == 0 ? @"" : [text substringWithRange:paragraphRange];
+    BOOL empty = paragraphText.length == 0 || [paragraphText isEqualToString:@"\n"];
+    if (empty) {
+      show = YES;
+      location = paragraphRange.location;
+      depth = [self listDepthForCursorParagraph];
+    }
+  }
+
+  _layoutManager.emptyBulletDepth = show ? depth : -1;
+  _layoutManager.emptyBulletLocation = location;
+  _layoutManager.emptyBulletFont = _formatterStyle.baseFont;
+  _layoutManager.emptyBulletColor = _formatterStyle.baseTextColor;
+
+  // An empty editor never runs the formatter (it early-returns at length 0), so
+  // the trailing/extra line fragment the marker draws into isn't laid out yet —
+  // force it so the bullet appears before the first keystroke.
+  if (show && text.length == 0) {
+    [_layoutManager ensureLayoutForTextContainer:_textView.textContainer];
+  }
+  ENRMSetNeedsDisplay(_textView);
 }
 
 - (void)resetPendingStylesForSelectionChange
@@ -1725,19 +1779,32 @@ using namespace facebook::react;
         [_formattingStore addRange:newRange];
       }
 
-      // Stamp the block attribute (heading or list) onto the inserted glyphs when
-      // typing inside a block paragraph. UIKit drops custom attributes from
-      // typingAttributes after the first insertion, so relying on it alone styles
-      // only the first character — apply directly to storage instead, matching how
-      // inline pending styles are applied above.
-      ENRMInputBlockType blockType = [self blockTypeForCursorParagraph];
-      if (blockType != ENRMInputBlockTypeParagraph) {
-        NSTextStorage *storage = _textView.textStorage;
-        NSRange clamped = NSIntersectionRange(insertedRange, NSMakeRange(0, storage.length));
-        if (clamped.length > 0) {
-          [storage addAttribute:ENRMBlockTypeAttributeName value:@(blockType) range:clamped];
-          if (blockType == ENRMInputBlockTypeUnorderedListItem) {
-            [storage addAttribute:ENRMListDepthAttributeName value:@([self listDepthForCursorParagraph]) range:clamped];
+      // Re-stamp the whole edited line with its block attribute. UIKit drops
+      // custom attributes from typingAttributes after the first insertion, and
+      // autocorrect/paste can replace the attribute-bearing characters entirely —
+      // so re-derive the line's kind (surviving attribute, else the kind captured
+      // before the edit) and apply it across the full line, healing both.
+      NSTextStorage *storage = _textView.textStorage;
+      ENRMInputBlockType lineType = [self blockTypeForCursorParagraph];
+      NSInteger lineDepth = [self listDepthForCursorParagraph];
+      if (lineType == ENRMInputBlockTypeParagraph && _preEditBlockType != ENRMInputBlockTypeParagraph) {
+        lineType = _preEditBlockType;
+        lineDepth = _preEditListDepth;
+      }
+      if (lineType != ENRMInputBlockTypeParagraph && storage.length > 0) {
+        NSString *plainNow = storage.string;
+        NSRange paragraphRange =
+            [plainNow paragraphRangeForRange:NSMakeRange(MIN(_textView.selectedRange.location, plainNow.length), 0)];
+        NSRange content = paragraphRange;
+        if (content.length > 0 && [plainNow characterAtIndex:NSMaxRange(content) - 1] == '\n') {
+          content.length -= 1;
+        }
+        if (content.length > 0) {
+          [storage addAttribute:ENRMBlockTypeAttributeName value:@(lineType) range:content];
+          if (lineType == ENRMInputBlockTypeUnorderedListItem) {
+            [storage addAttribute:ENRMListDepthAttributeName value:@(lineDepth) range:content];
+          } else {
+            [storage removeAttribute:ENRMListDepthAttributeName range:content];
           }
         }
       }
@@ -1872,10 +1939,17 @@ using namespace facebook::react;
       NSString *paragraphText = [text substringWithRange:paragraphRange];
       BOOL isEmpty = paragraphText.length == 0 || [paragraphText isEqualToString:@"\n"];
       if (isEmpty) {
-        NSMutableDictionary *attrs = [NSMutableDictionary dictionary];
-        attrs[NSFontAttributeName] = _formatterStyle.baseFont;
-        attrs[NSForegroundColorAttributeName] = _formatterStyle.baseTextColor;
-        _textView.typingAttributes = attrs;
+        if (_pendingBlockType != ENRMInputBlockTypeParagraph) {
+          // Keep an empty heading/list line's typing context (font, block
+          // attribute, indent) so its marker stays and the next character
+          // continues the block.
+          [self syncTypingAttributesWithPendingStyles];
+        } else {
+          NSMutableDictionary *attrs = [NSMutableDictionary dictionary];
+          attrs[NSFontAttributeName] = _formatterStyle.baseFont;
+          attrs[NSForegroundColorAttributeName] = _formatterStyle.baseTextColor;
+          _textView.typingAttributes = attrs;
+        }
       }
     }
   }
@@ -1890,9 +1964,39 @@ using namespace facebook::react;
     return NO;
   }
   _preEditSelectedRange = _lastSelectedRange;
+  [self capturePreEditBlockForRange:range];
   _isTextChanging = YES;
   [self stripLinkTypingAttributes];
   return YES;
+}
+
+/// Records the block kind/depth of the line being edited before the change, so a
+/// replacement that wipes the attribute-bearing characters (autocorrect, paste)
+/// can be healed afterward.
+- (void)capturePreEditBlockForRange:(NSRange)range
+{
+  _preEditBlockType = ENRMInputBlockTypeParagraph;
+  _preEditListDepth = 0;
+
+  NSTextStorage *storage = _textView.textStorage;
+  NSString *text = storage.string;
+  if (text.length == 0) {
+    return;
+  }
+  NSUInteger probe = MIN(range.location, text.length - 1);
+  NSRange paragraphRange = [text paragraphRangeForRange:NSMakeRange(probe, 0)];
+  if (paragraphRange.location >= text.length || [text characterAtIndex:paragraphRange.location] == '\n') {
+    return;
+  }
+  id type = [storage attribute:ENRMBlockTypeAttributeName atIndex:paragraphRange.location effectiveRange:NULL];
+  if (!type) {
+    return;
+  }
+  _preEditBlockType = (ENRMInputBlockType)[type integerValue];
+  if (_preEditBlockType == ENRMInputBlockTypeUnorderedListItem) {
+    id depthValue = [storage attribute:ENRMListDepthAttributeName atIndex:paragraphRange.location effectiveRange:NULL];
+    _preEditListDepth = depthValue ? [depthValue integerValue] : 0;
+  }
 }
 
 /// Intercepts Tab (indent) and Backspace at the start of a list item (outdent,
@@ -1978,6 +2082,7 @@ using namespace facebook::react;
   [self updateActiveMention];
   [self emitOnChangeState];
   [self emitCaretRectChangeIfNeeded];
+  [self updateEmptyBulletMarker];
 }
 
 #else
