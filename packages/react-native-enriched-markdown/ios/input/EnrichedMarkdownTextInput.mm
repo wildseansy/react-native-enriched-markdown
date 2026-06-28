@@ -1313,6 +1313,24 @@ using namespace facebook::react;
       show = YES;
       location = paragraphRange.location;
       depth = [self listDepthForCursorParagraph];
+
+      // A mid-document empty list line is just a newline with no paragraph style,
+      // so it lays out flush left — the caret stays un-indented and the marker is
+      // drawn off the left edge (clipped). Stamp the list paragraph style onto the
+      // line so it indents and the bullet positions correctly, immediately, before
+      // any character is typed. (The trailing empty line uses the extra line
+      // fragment, which is why only the last line worked before.)
+      if (paragraphRange.length > 0) {
+        NSMutableParagraphStyle *paragraph = [[NSMutableParagraphStyle alloc] init];
+        CGFloat indent = depth * ENRMListIndentPerDepth + ENRMListMarkerWidth;
+        paragraph.firstLineHeadIndent = indent;
+        paragraph.headIndent = indent;
+        paragraph.paragraphSpacing = ENRMListItemSpacing;
+        NSTextStorage *storage = _textView.textStorage;
+        [storage beginEditing];
+        [storage addAttribute:NSParagraphStyleAttributeName value:paragraph range:paragraphRange];
+        [storage endEditing];
+      }
     }
   }
 
