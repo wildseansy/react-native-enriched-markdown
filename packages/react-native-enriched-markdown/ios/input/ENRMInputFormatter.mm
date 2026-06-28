@@ -263,6 +263,9 @@ static CGFloat headingScaleForLevel(NSInteger level)
                          NSMutableParagraphStyle *paragraph = [[NSMutableParagraphStyle alloc] init];
                          paragraph.firstLineHeadIndent = indent;
                          paragraph.headIndent = indent;
+                         // Add a little space after each item so bullets read as
+                         // separate rows.
+                         paragraph.paragraphSpacing = ENRMListItemSpacing;
 
                          NSRange paragraphRange = [plainString paragraphRangeForRange:attrRange];
                          [textStorage addAttribute:NSParagraphStyleAttributeName value:paragraph range:paragraphRange];

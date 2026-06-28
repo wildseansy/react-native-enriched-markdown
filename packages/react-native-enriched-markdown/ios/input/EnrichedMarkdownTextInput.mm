@@ -82,6 +82,16 @@ using namespace facebook::react;
   ENRMInputBlockType _pendingBlockType;
   NSInteger _pendingListDepth;
 
+  // Set when the pending block kind was established for an empty line (list
+  // toggled on, or a list continued onto a fresh line by Return). While set, a
+  // selection change on that still-empty line must NOT clear the pending kind —
+  // it is the only thing keeping the marker alive until the first character is
+  // typed. Cleared once a glyph lands (the attribute then lives on real text) or
+  // the caret leaves the empty line. Without this, a selection event arriving
+  // after the post-edit grace window (more likely under heavier app load) wipes
+  // the pending kind and the continued bullet is lost.
+  BOOL _keepPendingBlockOnEmptyLine;
+
   // Block kind/depth of the edited line captured before a text change, so it can
   // be restored if the edit (e.g. autocorrect) replaced the attribute-bearing
   // characters.
@@ -798,6 +808,7 @@ using namespace facebook::react;
 
   _pendingBlockType = newType;
   _pendingListDepth = 0;
+  _keepPendingBlockOnEmptyLine = (newType == ENRMInputBlockTypeUnorderedListItem);
 
   [self applyFormatting];
   [self syncTypingAttributesWithPendingStyles];
@@ -825,6 +836,7 @@ using namespace facebook::react;
   NSString *text = storage.string;
   if (text.length == 0) {
     _pendingListDepth = MIN(MAX(_pendingListDepth + delta, (NSInteger)0), ENRMMaxListDepth);
+    _keepPendingBlockOnEmptyLine = YES;
     [self emitFormattingChanged];
     return;
   }
@@ -1272,6 +1284,7 @@ using namespace facebook::react;
     CGFloat indent = depth * ENRMListIndentPerDepth + ENRMListMarkerWidth;
     paragraph.firstLineHeadIndent = indent;
     paragraph.headIndent = indent;
+    paragraph.paragraphSpacing = ENRMListItemSpacing;
     attrs[NSParagraphStyleAttributeName] = paragraph;
   } else {
     [attrs removeObjectForKey:ENRMBlockTypeAttributeName];
@@ -1333,11 +1346,37 @@ using namespace facebook::react;
   [_pendingStyles removeAllObjects];
   [_pendingStyleRemovals removeAllObjects];
   // Block kind carries via the stored attribute on non-empty lines; clear the
-  // pending kind so it never leaks onto a different (empty) line.
-  _pendingBlockType = ENRMInputBlockTypeParagraph;
-  _pendingListDepth = 0;
+  // pending kind so it never leaks onto a different (empty) line — unless a list
+  // was just continued/toggled onto this still-empty line, where the pending kind
+  // is the only thing keeping the marker alive until the first character.
+  if (_keepPendingBlockOnEmptyLine && [self cursorIsOnEmptyLine]) {
+    // Keep the pending list kind; the flag persists until a glyph lands or the
+    // caret leaves the empty line.
+  } else {
+    _keepPendingBlockOnEmptyLine = NO;
+    _pendingBlockType = ENRMInputBlockTypeParagraph;
+    _pendingListDepth = 0;
+  }
   [self rebuildPendingStylesFromContext];
   [self syncTypingAttributesWithPendingStyles];
+}
+
+/// Whether the caret (no selection) sits on a line with no text content.
+- (BOOL)cursorIsOnEmptyLine
+{
+  if (_textView.selectedRange.length != 0) {
+    return NO;
+  }
+  NSString *text = _textView.textStorage.string;
+  if (text.length == 0) {
+    return YES;
+  }
+  NSUInteger loc = MIN(_textView.selectedRange.location, text.length);
+  NSRange paragraph = [text paragraphRangeForRange:NSMakeRange(loc, 0)];
+  if (paragraph.length == 0) {
+    return YES;
+  }
+  return [[text substringWithRange:paragraph] isEqualToString:@"\n"];
 }
 
 - (void)rebuildPendingStylesFromContext
@@ -1866,10 +1905,12 @@ using namespace facebook::react;
         // Continue the list on the new line at the same depth.
         _pendingBlockType = ENRMInputBlockTypeUnorderedListItem;
         _pendingListDepth = prevDepth;
+        _keepPendingBlockOnEmptyLine = YES;
       } else {
         // Heading ends, empty list item exits, or a plain newline.
         _pendingBlockType = ENRMInputBlockTypeParagraph;
         _pendingListDepth = 0;
+        _keepPendingBlockOnEmptyLine = NO;
       }
 
       // The inserted newline must never carry a block attribute itself.
@@ -1892,6 +1933,12 @@ using namespace facebook::react;
   }
   _preEditReplacementLength = 0;
   _preEditReplacementHasNewline = NO;
+
+  // Once a glyph lands the block attribute lives on real text, so the empty-line
+  // keep-flag is no longer needed; drop it to avoid leaking onto another line.
+  if (![self cursorIsOnEmptyLine]) {
+    _keepPendingBlockOnEmptyLine = NO;
+  }
 
   _lastTextLength = newLength;
 
