@@ -135,7 +135,10 @@ static const CGFloat kBulletGap = 9.0;
     UIColor *color = self.emptyBulletColor ?: [UIColor labelColor];
     CGRect used = self.extraLineFragmentUsedRect;
     CGFloat markerX = origin.x + used.origin.x - kBulletGap;
-    CGFloat centerY = origin.y + used.origin.y + used.size.height / 2.0;
+    // Center on the text line height, not the fragment height — the latter
+    // includes the list item's trailing paragraph spacing, which would push the
+    // marker down and clip it at the container's bottom edge.
+    CGFloat centerY = origin.y + used.origin.y + font.lineHeight / 2.0;
     [self drawBulletAtX:markerX centerY:centerY depth:self.emptyBulletDepth font:font color:color];
   }
 }
