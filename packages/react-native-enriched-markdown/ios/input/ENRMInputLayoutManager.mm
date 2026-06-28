@@ -104,10 +104,18 @@ static const CGFloat kBulletGap = 9.0;
 
                                    UIFont *font = nil;
                                    UIColor *color = nil;
-                                   if (charRange.location < storage.length) {
+                                   // An empty list line has no character carrying the font/color, so
+                                   // use the values the view supplied for the empty marker.
+                                   if (isEmptyListLine) {
+                                     font = self.emptyBulletFont;
+                                     color = self.emptyBulletColor;
+                                   }
+                                   if (!font && charRange.location < storage.length) {
                                      font = [storage attribute:NSFontAttributeName
                                                        atIndex:charRange.location
                                                 effectiveRange:NULL];
+                                   }
+                                   if (!color && charRange.location < storage.length) {
                                      color = [storage attribute:NSForegroundColorAttributeName
                                                         atIndex:charRange.location
                                                  effectiveRange:NULL];
@@ -119,8 +127,15 @@ static const CGFloat kBulletGap = 9.0;
                                      color = [UIColor labelColor];
                                    }
 
-                                   CGPoint glyphLoc = [self locationForGlyphAtIndex:glyphRange.location];
-                                   CGFloat baselineY = origin.y + rect.origin.y + glyphLoc.y;
+                                   // An empty line's only glyph is a newline, whose location sits at the
+                                   // line's bottom rather than a text baseline — using it would draw the
+                                   // marker too low. Derive the baseline from the font ascender so an
+                                   // empty list line's bullet lands exactly where the first typed glyph's
+                                   // bullet will.
+                                   CGFloat baselineOffset = isEmptyListLine
+                                                                ? font.ascender
+                                                                : [self locationForGlyphAtIndex:glyphRange.location].y;
+                                   CGFloat baselineY = origin.y + rect.origin.y + baselineOffset;
                                    CGFloat markerX = origin.x + usedRect.origin.x - kBulletGap;
                                    CGFloat centerY = baselineY - (font.xHeight + font.capHeight) / 4.0;
                                    [self drawBulletAtX:markerX centerY:centerY depth:depth font:font color:color];
