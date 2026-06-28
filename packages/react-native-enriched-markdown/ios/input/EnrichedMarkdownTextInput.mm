@@ -1284,9 +1284,10 @@ using namespace facebook::react;
     CGFloat indent = depth * ENRMListIndentPerDepth + ENRMListMarkerWidth;
     paragraph.firstLineHeadIndent = indent;
     paragraph.headIndent = indent;
-    // No paragraphSpacing here: an empty paragraph renders a taller caret when it
-    // carries trailing spacing, so the caret would visibly shrink/jump up on the
-    // first keystroke. The formatter adds the spacing once the line has content.
+    // Gap goes ABOVE each item (paragraphSpacingBefore), not below, so it's
+    // present on the empty line immediately without inflating the empty
+    // paragraph's caret (which would make the caret shrink on the first keystroke).
+    paragraph.paragraphSpacingBefore = ENRMListItemSpacing;
     attrs[NSParagraphStyleAttributeName] = paragraph;
   } else {
     [attrs removeObjectForKey:ENRMBlockTypeAttributeName];
@@ -1327,9 +1328,7 @@ using namespace facebook::react;
         CGFloat indent = depth * ENRMListIndentPerDepth + ENRMListMarkerWidth;
         paragraph.firstLineHeadIndent = indent;
         paragraph.headIndent = indent;
-        // No paragraphSpacing on the empty line — it would render a taller caret
-        // that jumps up on the first keystroke. The formatter adds the spacing
-        // once the line has content.
+        paragraph.paragraphSpacingBefore = ENRMListItemSpacing;
         NSTextStorage *storage = _textView.textStorage;
         [storage beginEditing];
         [storage addAttribute:NSParagraphStyleAttributeName value:paragraph range:paragraphRange];

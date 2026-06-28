@@ -129,11 +129,12 @@ static const CGFloat kBulletGap = 9.0;
 
                                    // An empty line's only glyph is a newline, whose location sits at the
                                    // line's bottom rather than a text baseline — using it would draw the
-                                   // marker too low. Derive the baseline from the font ascender so an
-                                   // empty list line's bullet lands exactly where the first typed glyph's
-                                   // bullet will.
+                                   // marker too low. Derive the baseline from the font ascender (plus the
+                                   // leading paragraph spacing, which pushes the text down within the
+                                   // fragment) so an empty list line's bullet lands exactly where the
+                                   // first typed glyph's bullet will.
                                    CGFloat baselineOffset = isEmptyListLine
-                                                                ? font.ascender
+                                                                ? ENRMListItemSpacing + font.ascender
                                                                 : [self locationForGlyphAtIndex:glyphRange.location].y;
                                    CGFloat baselineY = origin.y + rect.origin.y + baselineOffset;
                                    CGFloat markerX = origin.x + usedRect.origin.x - kBulletGap;
@@ -150,9 +151,8 @@ static const CGFloat kBulletGap = 9.0;
     UIColor *color = self.emptyBulletColor ?: [UIColor labelColor];
     CGRect used = self.extraLineFragmentUsedRect;
     CGFloat markerX = origin.x + used.origin.x - kBulletGap;
-    // Center on the text line height, not the fragment height — the latter
-    // includes the list item's trailing paragraph spacing, which would push the
-    // marker down and clip it at the container's bottom edge.
+    // Center on the text line height, not the fragment height (which includes the
+    // item's leading paragraph spacing).
     CGFloat centerY = origin.y + used.origin.y + font.lineHeight / 2.0;
     [self drawBulletAtX:markerX centerY:centerY depth:self.emptyBulletDepth font:font color:color];
   }
@@ -167,7 +167,8 @@ static const CGFloat kBulletGap = 9.0;
   UIColor *color = self.emptyBulletColor ?: [UIColor labelColor];
   CGFloat headIndent = self.emptyBulletDepth * ENRMListIndentPerDepth + ENRMListMarkerWidth;
   CGFloat markerX = inset.left + headIndent - kBulletGap;
-  CGFloat centerY = inset.top + font.lineHeight / 2.0;
+  // The list line's leading paragraph spacing pushes the first line down.
+  CGFloat centerY = inset.top + ENRMListItemSpacing + font.lineHeight / 2.0;
   [self drawBulletAtX:markerX centerY:centerY depth:self.emptyBulletDepth font:font color:color];
 }
 
