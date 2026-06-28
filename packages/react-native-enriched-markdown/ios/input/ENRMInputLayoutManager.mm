@@ -19,7 +19,11 @@ static const CGFloat kBulletGap = 9.0;
 
 /// Draws the depth-styled bullet (filled dot, ring, then square) centered at
 /// (markerX, centerY).
-- (void)drawBulletAtX:(CGFloat)markerX centerY:(CGFloat)centerY depth:(NSInteger)depth font:(UIFont *)font color:(UIColor *)color
+- (void)drawBulletAtX:(CGFloat)markerX
+              centerY:(CGFloat)centerY
+                depth:(NSInteger)depth
+                 font:(UIFont *)font
+                color:(UIColor *)color
 {
   CGContextRef ctx = UIGraphicsGetCurrentContext();
   if (!ctx || isnan(markerX) || isnan(centerY)) {

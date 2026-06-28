@@ -562,8 +562,7 @@ using namespace facebook::react;
   // Hide the placeholder while a bullet is drawn on the empty editor (block just
   // toggled, nothing typed yet) — otherwise the marker overlaps the placeholder.
   BOOL hasText = ENRMGetPlainText(_textView).length > 0;
-  BOOL emptyListMarker =
-      !hasText && [self blockTypeForCursorParagraph] == ENRMInputBlockTypeUnorderedListItem;
+  BOOL emptyListMarker = !hasText && [self blockTypeForCursorParagraph] == ENRMInputBlockTypeUnorderedListItem;
   _placeholderLabel.hidden = hasText || emptyListMarker;
 }
 
@@ -2062,7 +2061,8 @@ using namespace facebook::react;
   }
   _preEditSelectedRange = _lastSelectedRange;
   _preEditReplacementLength = range.length;
-  _preEditReplacementHasNewline = [text rangeOfCharacterFromSet:[NSCharacterSet newlineCharacterSet]].location != NSNotFound;
+  _preEditReplacementHasNewline =
+      [text rangeOfCharacterFromSet:[NSCharacterSet newlineCharacterSet]].location != NSNotFound;
   [self capturePreEditBlockForRange:range];
   _isTextChanging = YES;
   [self stripLinkTypingAttributes];
