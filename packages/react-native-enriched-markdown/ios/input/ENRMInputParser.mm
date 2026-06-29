@@ -53,6 +53,10 @@ struct BlockTypeMapping {
 
 static const BlockTypeMapping kSupportedBlocks[] = {
     {MD_BLOCK_P, ENRMInputBlockTypeParagraph},
+    // MD_BLOCK_H maps to a representative heading type; onEnterBlock resolves the
+    // level (via resolveBlockLevel) and rewrites the type to the level-specific
+    // ENRMInputBlockTypeHeadingN.
+    {MD_BLOCK_H, ENRMInputBlockTypeHeading1},
 };
 static const size_t kSupportedBlockCount = sizeof(kSupportedBlocks) / sizeof(kSupportedBlocks[0]);
 
@@ -68,11 +72,13 @@ static bool isSupportedBlock(MD_BLOCKTYPE md4cType, ENRMInputBlockType &outBlock
 }
 
 // Per-block integer payload (heading level, list depth). md4c exposes this in
-// the block's MD_BLOCK_*_DETAIL struct. PR1 has no leveled block, so this
-// returns 0; a heading handler's block adds a case reading
-// MD_BLOCK_H_DETAIL.level.
-static NSInteger resolveBlockLevel(MD_BLOCKTYPE, void *)
+// the block's MD_BLOCK_*_DETAIL struct. Headings read MD_BLOCK_H_DETAIL.level
+// (1-6); other blocks have no level and return 0.
+static NSInteger resolveBlockLevel(MD_BLOCKTYPE blockType, void *detail)
 {
+  if (blockType == MD_BLOCK_H && detail) {
+    return (NSInteger)(static_cast<MD_BLOCK_H_DETAIL *>(detail)->level);
+  }
   return 0;
 }
 
@@ -173,8 +179,10 @@ static int onEnterBlock(MD_BLOCKTYPE blockType, void *detail, void *userdata)
 
   auto *context = static_cast<ParseContext *>(userdata);
   BlockInfo blockInfo;
-  blockInfo.type = mappedType;
   blockInfo.level = resolveBlockLevel(blockType, detail);
+  // Headings share one md4c block type but split into six ENRMInputBlockTypes by
+  // level; map the resolved level onto the concrete heading type.
+  blockInfo.type = (blockType == MD_BLOCK_H) ? ENRMBlockTypeForHeadingLevel(blockInfo.level) : mappedType;
   context->openBlockStack.push_back(blockInfo);
   return 0;
 }
@@ -419,6 +427,7 @@ static bool runMd4cParse(NSString *markdown, ParseContext &context)
   }
 
   NSArray<ENRMInputStyledRange *> *styledRanges = [self parse:markdown];
+  NSArray<ENRMBlockRange *> *rawBlockRanges = [self parseBlocks:markdown];
 
   NSUInteger rawLength = markdown.length;
 
@@ -434,6 +443,30 @@ static bool runMd4cParse(NSString *markdown, ParseContext &context)
       if (syntaxRange.length > 0) {
         [syntaxIndexes addIndexesInRange:syntaxRange];
       }
+    }
+  }
+
+  // Block-level syntax (e.g. a heading's "# " line prefix) is structural markup,
+  // not content, and must be stripped from plain text exactly like inline
+  // delimiters — otherwise the marker survives into the editor AND the
+  // block-aware serializer re-prepends it, producing a doubled "# # ". A block's
+  // content range starts at its first text char; the marker is everything from
+  // the line start up to that char (handles "#"*level plus one-or-more spaces).
+  for (ENRMBlockRange *rawBlock in rawBlockRanges) {
+    NSUInteger contentStart = rawBlock.range.location;
+    if (contentStart == 0 || contentStart > rawLength) {
+      continue;
+    }
+    NSUInteger lineStart = contentStart;
+    while (lineStart > 0) {
+      unichar previous = [markdown characterAtIndex:lineStart - 1];
+      if (previous == '\n' || previous == '\r') {
+        break;
+      }
+      lineStart--;
+    }
+    if (contentStart > lineStart) {
+      [syntaxIndexes addIndexesInRange:NSMakeRange(lineStart, contentStart - lineStart)];
     }
   }
 
@@ -503,10 +536,9 @@ static bool runMd4cParse(NSString *markdown, ParseContext &context)
     [formattingRanges addObject:formattingRange];
   }
 
-  // Map block ranges (raw-markdown coords) onto plain-text coords. Empty in PR1
-  // since parseBlocks: returns no Paragraph ranges; the path is ready for a
-  // handler-claimed block type.
-  NSArray<ENRMBlockRange *> *rawBlockRanges = [self parseBlocks:markdown];
+  // Map block content ranges (raw-markdown coords) onto plain-text coords. The
+  // block's marker syntax was stripped above, so the content range maps cleanly
+  // onto the post-strip text and the block no longer covers the marker.
   NSMutableArray<ENRMBlockRange *> *blockRanges = [NSMutableArray arrayWithCapacity:rawBlockRanges.count];
   for (ENRMBlockRange *rawBlock in rawBlockRanges) {
     NSUInteger contentStart = rawBlock.range.location;
