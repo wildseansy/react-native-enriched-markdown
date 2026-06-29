@@ -75,6 +75,7 @@ using namespace facebook::react;
 
   struct {
     BOOL bold, italic, underline, strikethrough, spoiler, link, initialized;
+    NSInteger headingLevel;
   } _prevState;
 
   std::optional<CGRect> _prevCaretRect;
@@ -568,6 +569,7 @@ using namespace facebook::react;
 
   [_formattingStore adjustForEditAtLocation:editLocation deletedLength:selection.length insertedLength:text.length];
   [_blockStore adjustForEditAtLocation:editLocation deletedLength:selection.length insertedLength:text.length];
+  [self dropStaleEmptyHeadings];
 
   for (ENRMFormattingRange *range in ranges) {
     NSRange shifted = NSMakeRange(range.range.location + editLocation, range.range.length);
@@ -770,6 +772,146 @@ using namespace facebook::react;
   [self applyFormatting];
   [self syncTypingAttributesWithPendingStyles];
   [self emitFormattingChanged];
+}
+
+- (void)toggleHeading:(NSInteger)level
+{
+  [self toggleBlockType:ENRMBlockTypeForHeadingLevel(level) level:level];
+}
+
+/// Toggles a paragraph-scoped block on the cursor's paragraph(s). Mirrors
+/// toggleInlineStyle: for the block pipeline: if every touched paragraph already
+/// carries exactly `type`, the block is cleared back to the implicit Paragraph;
+/// otherwise the block is set. Re-applies formatting and syncs the cursor's
+/// typing attributes so a freshly toggled line immediately renders with the
+/// block's font.
+- (void)toggleBlockType:(ENRMInputBlockType)type level:(NSInteger)level
+{
+  NSString *text = ENRMGetPlainText(_textView);
+  NSRange paragraphRange = [text paragraphRangeForRange:_textView.selectedRange];
+
+  // Match the block by its line start, not strict position containment: an empty
+  // heading line carries a zero-length anchor at the line start that
+  // blockRangeContainingPosition would miss, making toggle-off re-set the
+  // heading instead of clearing it.
+  ENRMBlockRange *current = nil;
+  for (ENRMBlockRange *blockRange in _blockStore.allRanges) {
+    if (blockRange.range.location == paragraphRange.location) {
+      current = blockRange;
+      break;
+    }
+  }
+  BOOL alreadyActive = current != nil && current.type == type;
+
+  if (alreadyActive) {
+    [_blockStore removeBlockInParagraphRange:paragraphRange inText:text];
+  } else {
+    [_blockStore setBlockType:type level:level forParagraphRange:paragraphRange inText:text];
+  }
+
+  [self applyFormatting];
+  [self syncTypingAttributesWithCursorBlock];
+  [self emitFormattingChanged];
+}
+
+/// Heading level (1-6, or 0) of the paragraph the caret sits in. Unlike a
+/// strict position-containment check, this matches the caret at the end of a
+/// heading line and on an empty heading line, so toolbar state and typing
+/// attributes reflect the line the caret is on (mirrors how inline isActive
+/// tracks the caret). A heading block always starts at its line's first
+/// character, so it owns the caret's paragraph when their start offsets match.
+- (NSInteger)headingLevelForCursorParagraph
+{
+  NSString *text = _textView.textStorage.string;
+  NSRange paragraph = [text paragraphRangeForRange:_textView.selectedRange];
+  for (ENRMBlockRange *block in _blockStore.allRanges) {
+    NSInteger level = ENRMHeadingLevelForBlockType(block.type);
+    if (level > 0 && block.range.location == paragraph.location) {
+      return level;
+    }
+  }
+  return 0;
+}
+
+/// Syncs typing attributes so text typed at the caret on a block-styled line
+/// (e.g. a heading) adopts that block's font rather than the base font. Inline
+/// pending traits (bold/italic) are unioned on top, matching the inline pass.
+- (void)syncTypingAttributesWithCursorBlock
+{
+  UIFontDescriptorSymbolicTraits traits = 0;
+  if ([_pendingStyles containsObject:@(ENRMInputStyleTypeStrong)]) {
+    traits |= UIFontDescriptorTraitBold;
+  }
+  if ([_pendingStyles containsObject:@(ENRMInputStyleTypeEmphasis)]) {
+    traits |= UIFontDescriptorTraitItalic;
+  }
+
+  NSInteger headingLevel = [self headingLevelForCursorParagraph];
+
+  UIFont *font;
+  if (headingLevel >= 1 && headingLevel <= 6) {
+    UIFont *headingFont = [_formatterStyle headingFontForLevel:headingLevel];
+    UIFontDescriptorSymbolicTraits merged = headingFont.fontDescriptor.symbolicTraits | traits;
+    UIFontDescriptor *descriptor = [headingFont.fontDescriptor fontDescriptorWithSymbolicTraits:merged];
+    font = descriptor ? [UIFont fontWithDescriptor:descriptor size:0] : headingFont;
+  } else {
+    font = [_formatterStyle fontForTraits:traits];
+  }
+
+  NSMutableDictionary *attrs = [_textView.typingAttributes mutableCopy];
+  attrs[NSFontAttributeName] = font;
+  RCTUIColor *headingColor = headingLevel >= 1 ? [_formatterStyle headingColorForLevel:headingLevel] : nil;
+  attrs[NSForegroundColorAttributeName] = headingColor ?: _formatterStyle.baseTextColor;
+  _textView.typingAttributes = attrs;
+}
+
+/// Re-clips every heading block to the single paragraph at its start. Headings
+/// never span more than one paragraph; after a newline splits a heading the
+/// stored range may cover two paragraphs, so we reset it to the first one
+/// (turning the spilled-over line into a plain paragraph).
+- (void)clipHeadingBlocksToFirstParagraph
+{
+  NSString *text = ENRMGetPlainText(_textView);
+  for (ENRMBlockRange *block in _blockStore.allRanges) {
+    if (ENRMHeadingLevelForBlockType(block.type) == 0) {
+      continue;
+    }
+    // Keep zero-length headings (empty-line anchors) untouched here; their
+    // validity is reconciled by dropStaleEmptyHeadings.
+    if (block.range.length == 0) {
+      continue;
+    }
+    NSRange firstParagraph = [text paragraphRangeForRange:NSMakeRange(block.range.location, 0)];
+    if (!NSEqualRanges(firstParagraph, block.range)) {
+      [_blockStore setBlockType:block.type level:block.level forParagraphRange:firstParagraph inText:text];
+    }
+  }
+}
+
+/// Removes zero-length heading anchors that no longer sit at the start of an
+/// empty line. An emptied heading line keeps a zero-length block (so the line
+/// stays a heading), but once that line is merged away — e.g. Backspace at its
+/// start joining the previous line — the anchor lands inside a non-empty
+/// paragraph and must be dropped so the merged line is a plain paragraph.
+- (void)dropStaleEmptyHeadings
+{
+  NSString *text = _textView.textStorage.string;
+  for (ENRMBlockRange *block in _blockStore.allRanges) {
+    if (ENRMHeadingLevelForBlockType(block.type) == 0 || block.range.length > 0) {
+      continue;
+    }
+    NSUInteger anchor = block.range.location;
+    BOOL valid = NO;
+    if (anchor <= text.length) {
+      NSRange paragraph = [text paragraphRangeForRange:NSMakeRange(anchor, 0)];
+      // Valid only when the anchor is the start of a line with no glyph content
+      // (an empty paragraph), i.e. the heading line is still present but empty.
+      valid = paragraph.location == anchor && paragraph.length == 0;
+    }
+    if (!valid) {
+      [_blockStore removeBlock:block];
+    }
+  }
 }
 
 - (void)setLink:(NSString *)url
@@ -1242,9 +1384,11 @@ using namespace facebook::react;
   BOOL spoilerActive = [self isEffectiveStyleActive:ENRMInputStyleTypeSpoiler atPosition:cursor];
   BOOL linkActive = [self isEffectiveStyleActive:ENRMInputStyleTypeLink atPosition:cursor];
 
+  NSInteger headingLevel = [self headingLevelForCursorParagraph];
+
   if (_prevState.initialized && _prevState.bold == boldActive && _prevState.italic == italicActive &&
       _prevState.underline == underlineActive && _prevState.strikethrough == strikethroughActive &&
-      _prevState.spoiler == spoilerActive && _prevState.link == linkActive) {
+      _prevState.spoiler == spoilerActive && _prevState.link == linkActive && _prevState.headingLevel == headingLevel) {
     return;
   }
 
@@ -1254,6 +1398,7 @@ using namespace facebook::react;
   _prevState.strikethrough = strikethroughActive;
   _prevState.spoiler = spoilerActive;
   _prevState.link = linkActive;
+  _prevState.headingLevel = headingLevel;
   _prevState.initialized = YES;
 
   emitter->onChangeState({
@@ -1263,6 +1408,7 @@ using namespace facebook::react;
       .strikethrough = {.isActive = strikethroughActive},
       .spoiler = {.isActive = spoilerActive},
       .link = {.isActive = linkActive},
+      .heading = {.level = static_cast<int>(headingLevel)},
   });
 }
 
@@ -1450,8 +1596,19 @@ using namespace facebook::react;
   [_formattingStore adjustForEditAtLocation:editLocation deletedLength:deletedLength insertedLength:insertedLength];
   [_blockStore adjustForEditAtLocation:editLocation deletedLength:deletedLength insertedLength:insertedLength];
 
+  // An emptied heading line keeps a zero-length anchor (so it stays a heading);
+  // drop any such anchor whose line was merged/removed by this edit.
+  [self dropStaleEmptyHeadings];
+
   if (insertedLength > 0) {
     NSRange insertedRange = NSMakeRange(editLocation, insertedLength);
+
+    // Headings are single-paragraph: a newline inserted into a heading (e.g.
+    // Enter at its end) splits it into two paragraphs, but the block-store edit
+    // adjustment grows the existing range to cover the insertion. Clip heading
+    // blocks back to their first paragraph so the new line starts as a plain
+    // paragraph. Lists (multi-paragraph blocks) are not clipped.
+    [self clipHeadingBlocksToFirstParagraph];
 
     // Skip applying pending styles when the insertion is only line breaks —
     // a phantom range over a bare newline corrupts isStyleActive() at the boundary.
@@ -1487,7 +1644,14 @@ using namespace facebook::react;
 
 #if !TARGET_OS_OSX
   if (newLength == 0) {
-    [self resetBaseTypingAttributes];
+    // Emptying the document normally reverts to the base font, but if a heading
+    // anchor survives (the whole doc was a heading and its text was deleted),
+    // keep typing heading-sized so the empty heading line persists.
+    if ([self headingLevelForCursorParagraph] > 0) {
+      [self syncTypingAttributesWithCursorBlock];
+    } else {
+      [self resetBaseTypingAttributes];
+    }
   }
 #endif
 
@@ -1550,10 +1714,17 @@ using namespace facebook::react;
       NSString *paragraphText = [text substringWithRange:paragraphRange];
       BOOL isEmpty = paragraphText.length == 0 || [paragraphText isEqualToString:@"\n"];
       if (isEmpty) {
-        NSMutableDictionary *attrs = [NSMutableDictionary dictionary];
-        attrs[NSFontAttributeName] = _formatterStyle.baseFont;
-        attrs[NSForegroundColorAttributeName] = _formatterStyle.baseTextColor;
-        _textView.typingAttributes = attrs;
+        // An empty line normally resets to the base font, but an empty heading
+        // line keeps a zero-length anchor and must stay heading-sized so the
+        // caret and subsequent typing render as a heading.
+        if ([self headingLevelForCursorParagraph] > 0) {
+          [self syncTypingAttributesWithCursorBlock];
+        } else {
+          NSMutableDictionary *attrs = [NSMutableDictionary dictionary];
+          attrs[NSFontAttributeName] = _formatterStyle.baseFont;
+          attrs[NSForegroundColorAttributeName] = _formatterStyle.baseTextColor;
+          _textView.typingAttributes = attrs;
+        }
       }
     }
   }

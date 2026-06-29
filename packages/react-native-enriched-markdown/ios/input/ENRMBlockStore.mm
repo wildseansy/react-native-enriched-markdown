@@ -111,6 +111,18 @@ static NSRange paragraphBoundsForRange(NSRange range, NSString *text)
     ENRMBlockRange *existing = _ranges[idx];
     NSUInteger existingStart = existing.range.location;
     NSUInteger existingEnd = NSMaxRange(existing.range);
+
+    // A zero-length block (an empty-line heading anchor) occupies a point, not a
+    // span, so the half-open overlap test never matches it. Match it explicitly
+    // when its anchor lies within the (possibly zero-length) removal range — the
+    // empty heading line being targeted.
+    if (existing.range.length == 0) {
+      if (existingStart >= removeStart && existingStart <= removeEnd) {
+        [indexesToRemove addIndex:idx];
+      }
+      continue;
+    }
+
     if (existingEnd <= removeStart || existingStart >= removeEnd) {
       continue;
     }
@@ -128,7 +140,10 @@ static NSRange paragraphBoundsForRange(NSRange range, NSString *text)
   NSRange paragraphRange = paragraphBoundsForRange(range, text);
   [self removeBlocksOverlappingRange:paragraphRange];
 
-  if (paragraphRange.length == 0) {
+  // An empty line has a zero-length paragraph range. Headings persist on an
+  // empty line via a zero-length anchor (the line stays a heading); other block
+  // types have nothing to anchor, so skip them.
+  if (paragraphRange.length == 0 && ENRMHeadingLevelForBlockType(type) == 0) {
     return;
   }
 
@@ -141,6 +156,14 @@ static NSRange paragraphBoundsForRange(NSRange range, NSString *text)
 {
   NSRange paragraphRange = paragraphBoundsForRange(range, text);
   [self removeBlocksOverlappingRange:paragraphRange];
+}
+
+- (void)removeBlock:(ENRMBlockRange *)block
+{
+  NSUInteger idx = [_ranges indexOfObjectIdenticalTo:block];
+  if (idx != NSNotFound) {
+    [_ranges removeObjectAtIndex:idx];
+  }
 }
 
 - (void)adjustForEditAtLocation:(NSUInteger)editLocation
@@ -170,7 +193,17 @@ static NSRange paragraphBoundsForRange(NSRange range, NSString *text)
           break;
 
         case EditOverlapFullyDeleted:
-          [indexesToRemove addIndex:idx];
+          // Headings persist as an empty line: when all the heading text is
+          // deleted but the line itself survives, collapse the block to a
+          // zero-length anchor at the line start instead of removing it, so the
+          // emptied line stays a heading. The view drops it if the line is
+          // actually gone (e.g. merged into another). Non-heading blocks are
+          // removed as before.
+          if (ENRMHeadingLevelForBlockType(blockRange.type) > 0) {
+            blockRange.range = NSMakeRange(editLocation + insertedLength, 0);
+          } else {
+            [indexesToRemove addIndex:idx];
+          }
           break;
 
         case EditOverlapDeletedInside: {
@@ -183,7 +216,7 @@ static NSRange paragraphBoundsForRange(NSRange range, NSString *text)
           NSUInteger newEnd = editLocation + insertedLength;
           NSUInteger newLength = newEnd > rangeStart ? newEnd - rangeStart : 0;
           blockRange.range = NSMakeRange(rangeStart, newLength);
-          if (newLength == 0) {
+          if (newLength == 0 && ENRMHeadingLevelForBlockType(blockRange.type) == 0) {
             [indexesToRemove addIndex:idx];
           }
           break;
@@ -194,14 +227,20 @@ static NSRange paragraphBoundsForRange(NSRange range, NSString *text)
           NSUInteger newStart = editLocation + insertedLength;
           NSUInteger newLength = blockRange.range.length - charsClipped;
           blockRange.range = NSMakeRange(newStart, newLength);
-          if (newLength == 0) {
+          if (newLength == 0 && ENRMHeadingLevelForBlockType(blockRange.type) == 0) {
             [indexesToRemove addIndex:idx];
           }
           break;
         }
       }
     } else {
-      if (rangeStart >= editLocation) {
+      if (rangeStart == editLocation && blockRange.range.length == 0 &&
+          ENRMHeadingLevelForBlockType(blockRange.type) > 0) {
+        // Typing into an empty (zero-length) heading: grow the anchor to cover
+        // the inserted text rather than shifting past it, so the line re-stamps
+        // as a heading.
+        blockRange.range = NSMakeRange(rangeStart, insertedLength);
+      } else if (rangeStart >= editLocation) {
         blockRange.range = NSMakeRange(rangeStart + insertedLength, blockRange.range.length);
       } else if (editLocation < rangeEnd) {
         blockRange.range = NSMakeRange(rangeStart, blockRange.range.length + insertedLength);
@@ -211,9 +250,12 @@ static NSRange paragraphBoundsForRange(NSRange range, NSString *text)
 
   removeIndexesInReverse(_ranges, indexesToRemove);
 
+  // Prune zero-length ranges, but keep zero-length headings: they anchor an
+  // emptied-but-still-present heading line (see EditOverlapFullyDeleted).
   NSMutableIndexSet *emptyIndexes = [NSMutableIndexSet indexSet];
   for (NSUInteger idx = 0; idx < _ranges.count; idx++) {
-    if (_ranges[idx].range.length == 0) {
+    ENRMBlockRange *range = _ranges[idx];
+    if (range.range.length == 0 && ENRMHeadingLevelForBlockType(range.type) == 0) {
       [emptyIndexes addIndex:idx];
     }
   }

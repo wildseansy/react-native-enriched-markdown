@@ -29,6 +29,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// the implicit paragraph default).
 - (void)removeBlockInParagraphRange:(NSRange)range inText:(NSString *)text;
 
+/// Removes a specific block instance (identity comparison). Used to drop a
+/// zero-length heading anchor without disturbing other blocks on the same line.
+- (void)removeBlock:(ENRMBlockRange *)block;
+
 /// Shifts/clips block ranges to follow a text edit, using the same overlap
 /// classification shape as ENRMFormattingStore.
 - (void)adjustForEditAtLocation:(NSUInteger)location
