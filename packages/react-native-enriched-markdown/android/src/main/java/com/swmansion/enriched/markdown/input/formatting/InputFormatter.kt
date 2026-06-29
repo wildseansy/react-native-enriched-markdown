@@ -166,12 +166,24 @@ class InputFormatter {
     }
 
     for (range in blockRanges) {
-      if (range.start >= range.end || range.start < 0 || range.end > spannable.length) continue
+      // A zero-length heading anchor (an emptied heading line) carries no text but must
+      // still size its empty line, so it is stamped INCLUSIVE_INCLUSIVE over its anchor
+      // point. Non-heading zero-length ranges have no spans to apply.
+      val isHeadingAnchor = range.length == 0 && range.type in BlockType.HEADINGS
+      if (!isHeadingAnchor && (range.start >= range.end || range.start < 0 || range.end > spannable.length)) continue
+      if (isHeadingAnchor && (range.start < 0 || range.start > spannable.length)) continue
       // Skip blocks outside the scope so unaffected lines keep their existing spans.
-      if (range.end <= start || range.start >= end) continue
+      // A zero-length anchor sits exactly on a boundary, so it is in-scope when its
+      // point falls within `[start, end]` inclusive.
+      if (isHeadingAnchor) {
+        if (range.start < start || range.start > end) continue
+      } else if (range.end <= start || range.start >= end) {
+        continue
+      }
       val handler = blockHandlers[range.type] ?: continue
+      val flags = if (isHeadingAnchor) Spannable.SPAN_INCLUSIVE_INCLUSIVE else Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
       for (span in handler.createSpans(range, currentStyle)) {
-        spannable.setSpan(span, range.start, range.end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+        spannable.setSpan(span, range.start, range.end, flags)
       }
     }
   }

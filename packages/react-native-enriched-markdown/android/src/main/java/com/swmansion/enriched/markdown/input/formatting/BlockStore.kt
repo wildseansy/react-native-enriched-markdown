@@ -40,7 +40,9 @@ class BlockStore {
   ) {
     val (start, end) = paragraphBounds(paragraphStart, paragraphEnd, text)
     removeBlocksOverlapping(start, end)
-    if (end <= start) return
+    // A heading on an empty line is kept as a zero-length anchor (see adjustForEdit);
+    // other blocks need real content, so an empty line yields no block.
+    if (end < start || (end == start && type !in BlockType.HEADINGS)) return
 
     val block = BlockRange(type, start, end, level)
     ranges.add(sortedInsertionIndex(start), block)
@@ -57,6 +59,29 @@ class BlockStore {
   ) {
     val (start, end) = paragraphBounds(paragraphStart, paragraphEnd, text)
     removeBlocksOverlapping(start, end)
+  }
+
+  /**
+   * Re-snaps every heading range to its line bounds `[lineStart, lineEnd)` (lineEnd
+   * excluding the trailing newline). A heading is a single-paragraph block that spans
+   * its whole line, so after a text edit this grows the block over text typed into the
+   * line and shrinks it as text is removed — including collapsing to a zero-length
+   * anchor on an emptied line (kept so the line stays a heading). A newline ends the
+   * line, so a heading never bleeds onto the next paragraph. Other block types are
+   * left untouched.
+   */
+  fun normalizeHeadingRangesToLines(text: CharSequence) {
+    for (range in ranges) {
+      if (range.type !in BlockType.HEADINGS) continue
+      val anchor = range.start.coerceIn(0, text.length)
+      var lineStart = anchor
+      while (lineStart > 0 && text[lineStart - 1] != '\n') lineStart--
+      var lineEnd = lineStart
+      while (lineEnd < text.length && text[lineEnd] != '\n') lineEnd++
+      range.start = lineStart
+      range.end = lineEnd
+    }
+    ranges.sortBy { it.start }
   }
 
   /**
@@ -84,7 +109,16 @@ class BlockStore {
           }
 
           EditOverlap.FULLY_DELETED -> {
-            indexesToRemove.add(idx)
+            // A heading whose text is fully deleted persists as a zero-length block
+            // anchored at the (now empty) line start, so the line stays a heading
+            // until the user toggles it off or the line is merged/removed (those
+            // text-aware decisions live in the view). Other blocks are dropped.
+            if (range.type in BlockType.HEADINGS) {
+              range.start = editLocation
+              range.end = editLocation
+            } else {
+              indexesToRemove.add(idx)
+            }
           }
 
           EditOverlap.DELETED_INSIDE -> {
@@ -95,7 +129,7 @@ class BlockStore {
             val newEnd = editLocation + insertedLength
             val newLength = if (newEnd > range.start) newEnd - range.start else 0
             range.end = range.start + newLength
-            if (newLength == 0) indexesToRemove.add(idx)
+            if (newLength == 0 && range.type !in BlockType.HEADINGS) indexesToRemove.add(idx)
           }
 
           EditOverlap.CLIPPED_START -> {
@@ -104,11 +138,18 @@ class BlockStore {
             val oldLength = range.length
             range.start = newStart
             range.end = newStart + oldLength - charsClipped
-            if (range.length == 0) indexesToRemove.add(idx)
+            if (range.length == 0 && range.type !in BlockType.HEADINGS) indexesToRemove.add(idx)
           }
         }
       } else {
         when {
+          // A zero-length heading anchor (an emptied heading line) stays put on insert;
+          // the view re-normalizes heading ranges to their line bounds afterwards, which
+          // grows the block over text typed back into the line.
+          range.length == 0 && range.type in BlockType.HEADINGS && range.start == editLocation -> {
+            // anchor stays at editLocation; end is grown by the view's normalization
+          }
+
           range.start >= editLocation -> {
             range.start += insertedLength
             range.end += insertedLength
@@ -125,19 +166,23 @@ class BlockStore {
       ranges.removeAt(idx)
     }
 
-    ranges.removeAll { it.length == 0 }
+    // Keep zero-length heading anchors (an emptied heading line that should stay a
+    // heading); drop every other collapsed range.
+    ranges.removeAll { it.length == 0 && it.type !in BlockType.HEADINGS }
   }
 
   /**
    * Drops any stored block overlapping `[start, end)` so a replacement can be
    * inserted cleanly. Blocks are line-scoped and never partially overlap, so a
-   * touched block is removed wholesale.
+   * touched block is removed wholesale. A zero-length anchor (an emptied heading
+   * line, where `start == end`) is also dropped when it sits anywhere in the
+   * paragraph bounds, so toggling a heading off clears an empty heading line.
    */
   private fun removeBlocksOverlapping(
     start: Int,
     end: Int,
   ) {
-    ranges.removeAll { it.end > start && it.start < end }
+    ranges.removeAll { (it.end > start && it.start < end) || (it.length == 0 && it.start in start..end) }
   }
 
   /** Expands a selection to cover whole lines (line-scoped block boundaries). */
