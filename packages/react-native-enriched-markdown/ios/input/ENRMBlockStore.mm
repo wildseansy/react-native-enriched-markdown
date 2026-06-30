@@ -140,14 +140,29 @@ static NSRange paragraphBoundsForRange(NSRange range, NSString *text)
   NSRange paragraphRange = paragraphBoundsForRange(range, text);
   [self removeBlocksOverlappingRange:paragraphRange];
 
-  // An empty line has a zero-length paragraph range. Headings and bullet items
-  // persist on an empty line via a zero-length anchor (the line stays the block);
-  // other block types have nothing to anchor, so skip them.
-  if (paragraphRange.length == 0 && !ENRMBlockTypePersistsWhenEmpty(type)) {
+  // Determine whether the line has any glyph content. A line that is empty —
+  // whether it's the trailing line (zero-length paragraph) or an empty line
+  // mid-document (its paragraph range is just the trailing newline) — must be
+  // anchored as a ZERO-LENGTH block at the line start, not a range covering the
+  // newline. A newline-covering range mis-grows when the user types into the
+  // line (the edit shifts the block past the insertion instead of growing it),
+  // which drops the block; a zero-length anchor grows correctly.
+  NSUInteger contentLength = paragraphRange.length;
+  if (contentLength > 0) {
+    unichar lastChar = [text characterAtIndex:NSMaxRange(paragraphRange) - 1];
+    if (lastChar == '\n' || lastChar == '\r') {
+      contentLength--;
+    }
+  }
+  BOOL lineIsEmpty = contentLength == 0;
+
+  if (lineIsEmpty && !ENRMBlockTypePersistsWhenEmpty(type)) {
+    // Nothing to anchor for a non-persisting type on an empty line.
     return;
   }
 
-  ENRMBlockRange *blockRange = [ENRMBlockRange rangeWithType:type range:paragraphRange level:level];
+  NSRange storedRange = lineIsEmpty ? NSMakeRange(paragraphRange.location, 0) : paragraphRange;
+  ENRMBlockRange *blockRange = [ENRMBlockRange rangeWithType:type range:storedRange level:level];
   NSUInteger insertAt = sortedInsertionIndex(_ranges, blockRange.range.location);
   [_ranges insertObject:blockRange atIndex:insertAt];
 }
