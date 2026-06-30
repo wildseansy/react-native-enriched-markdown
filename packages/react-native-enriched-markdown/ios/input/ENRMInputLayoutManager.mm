@@ -153,9 +153,13 @@
     UIColor *color = self.emptyBulletColor ?: [UIColor labelColor];
     CGRect used = self.extraLineFragmentUsedRect;
     CGFloat markerX = origin.x + used.origin.x - kENRMListBulletGap;
-    // Center on the text line height, not the fragment height (which includes the
-    // item's leading paragraph spacing).
-    CGFloat centerY = origin.y + used.origin.y + font.lineHeight / 2.0;
+    // Use the same optical center as the in-text marker (baseline minus half the
+    // cap/x-height), not the geometric line-box center (font.lineHeight / 2): the
+    // two diverge by a font-dependent amount, so a geometric center would shift
+    // the empty-line bullet relative to where the first typed glyph's bullet lands
+    // (visible with fonts whose ascender/descender are asymmetric).
+    CGFloat baselineY = origin.y + used.origin.y + font.ascender;
+    CGFloat centerY = baselineY - (font.xHeight + font.capHeight) / 4.0;
     [self drawBulletAtX:markerX centerY:centerY depth:self.emptyBulletDepth font:font color:color];
   }
 }
@@ -171,10 +175,12 @@
   // leading edge (see the list block handler); the marker sits a gap before that.
   CGFloat headIndent = (self.emptyBulletDepth + 1) * kENRMListIndentPerDepth;
   CGFloat markerX = inset.left + headIndent - kENRMListBulletGap;
-  // This path only ever draws the wholly-empty editor's first line, and TextKit
-  // doesn't apply paragraphSpacingBefore to the first paragraph, so no spacing
-  // offset here.
-  CGFloat centerY = inset.top + font.lineHeight / 2.0;
+  // Optical center (baseline minus half the cap/x-height) to match the in-text
+  // marker, rather than the geometric line-box center; see the extra-line-fragment
+  // path. TextKit doesn't apply paragraphSpacingBefore to the first paragraph, so
+  // no spacing offset here.
+  CGFloat baselineY = inset.top + font.ascender;
+  CGFloat centerY = baselineY - (font.xHeight + font.capHeight) / 4.0;
   [self drawBulletAtX:markerX centerY:centerY depth:self.emptyBulletDepth font:font color:color];
 }
 
