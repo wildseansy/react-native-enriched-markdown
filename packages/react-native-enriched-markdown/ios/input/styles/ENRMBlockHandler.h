@@ -46,6 +46,15 @@ NS_ASSUME_NONNULL_BEGIN
 /// @return YES if this handler owns the block.
 - (BOOL)matchesMd4cBlockType:(MD_BLOCKTYPE)md4cType detail:(void *)detail outLevel:(NSInteger *)outLevel;
 
+@optional
+
+/// Whether pressing Return inside a block of this type continues the block onto
+/// the next line (a new block of the same type/level) rather than ending it.
+/// Single-line blocks (headings) omit this or return NO; multi-line blocks (list
+/// items) return YES. The orchestrator consults the handler here instead of
+/// hardcoding per-type newline behavior. Defaults to NO when unimplemented.
+@property (nonatomic, readonly) BOOL continuesOnNewline;
+
 @end
 
 NS_ASSUME_NONNULL_END

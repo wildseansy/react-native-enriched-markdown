@@ -106,6 +106,11 @@ struct ParseContext {
   std::vector<BlockInfo> openBlockStack;
   std::vector<BlockInfo> resolvedBlocks;
   size_t lastTextEnd = 0;
+  // Unordered-list nesting depth: incremented on each MD_BLOCK_UL we enter,
+  // decremented on leave. A list item's paragraph (MD_BLOCK_P with listDepth > 0)
+  // becomes an UnorderedListItem block at depth listDepth-1. md4c carries no
+  // per-item depth, so it's derived from how many UL ancestors are open.
+  NSInteger listDepth = 0;
 };
 
 static std::vector<NSUInteger> buildByteToUTF16Map(const char *utf8, size_t byteLength)
@@ -172,29 +177,53 @@ static size_t closingDelimiterEndByte(const InlineSpanInfo &span, const char *ut
 // discarded later when building results.
 static int onEnterBlock(MD_BLOCKTYPE blockType, void *detail, void *userdata)
 {
+  auto *context = static_cast<ParseContext *>(userdata);
+
+  // Bullet-list nesting is tracked by depth, not stored as its own block: the
+  // container UL only bumps the counter that its items' paragraphs read.
+  if (blockType == MD_BLOCK_UL) {
+    context->listDepth++;
+    return 0;
+  }
+
   ENRMInputBlockType mappedType;
   if (!isSupportedBlock(blockType, mappedType)) {
     return 0;
   }
 
-  auto *context = static_cast<ParseContext *>(userdata);
   BlockInfo blockInfo;
   blockInfo.level = resolveBlockLevel(blockType, detail);
   // Headings share one md4c block type but split into six ENRMInputBlockTypes by
   // level; map the resolved level onto the concrete heading type.
   blockInfo.type = (blockType == MD_BLOCK_H) ? ENRMBlockTypeForHeadingLevel(blockInfo.level) : mappedType;
+  // A paragraph inside a list is the list item's line. Retag it as a list item
+  // at the current nesting depth; tagging the leaf paragraph (not the enclosing
+  // MD_BLOCK_LI) keeps each item's range on its own line, so a nested sublist
+  // doesn't extend its parent item's range.
+  if (blockType == MD_BLOCK_P && context->listDepth > 0) {
+    blockInfo.type = ENRMInputBlockTypeUnorderedListItem;
+    blockInfo.level = context->listDepth - 1;
+  }
   context->openBlockStack.push_back(blockInfo);
   return 0;
 }
 
 static int onLeaveBlock(MD_BLOCKTYPE blockType, void *, void *userdata)
 {
+  auto *context = static_cast<ParseContext *>(userdata);
+
+  if (blockType == MD_BLOCK_UL) {
+    if (context->listDepth > 0) {
+      context->listDepth--;
+    }
+    return 0;
+  }
+
   ENRMInputBlockType mappedType;
   if (!isSupportedBlock(blockType, mappedType)) {
     return 0;
   }
 
-  auto *context = static_cast<ParseContext *>(userdata);
   if (context->openBlockStack.empty()) {
     return 0;
   }

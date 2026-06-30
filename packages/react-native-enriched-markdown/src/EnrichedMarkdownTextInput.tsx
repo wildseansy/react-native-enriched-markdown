@@ -89,6 +89,8 @@ export interface StyleState {
   link: { isActive: boolean };
   /** Heading level of the cursor's paragraph: 0 = none, 1-6 = H1-H6. */
   heading: { level: number };
+  /** Whether the cursor's paragraph is a bullet list item, and its 0-based nesting depth. */
+  unorderedList: { isActive: boolean; depth: number };
 }
 
 export interface ContextMenuItem {
@@ -124,6 +126,12 @@ export interface EnrichedMarkdownTextInputInstance {
   toggleSpoiler: () => void;
   /** Toggle a heading level (1-6) on the cursor's paragraph; the same level toggles back to a paragraph. */
   toggleHeading: (level: number) => void;
+  /** Toggle a bullet list on the cursor's paragraph(s); toggling an existing list turns it back into paragraphs. */
+  toggleUnorderedList: () => void;
+  /** Increase nesting depth of the current list item; on a non-list paragraph, starts a bullet list. */
+  indentList: () => void;
+  /** Decrease nesting depth of the current list item; outdenting a depth-0 item removes the bullet. */
+  outdentList: () => void;
   setLink: (url: string) => void;
   insertLink: (text: string, url: string) => void;
   insertMention: (displayText: string, url: string) => void;
@@ -227,6 +235,12 @@ export interface EnrichedMarkdownTextInputProps extends Omit<
    * @platform ios
    */
   writingDirection?: 'auto' | 'ltr' | 'rtl' | 'first-strong';
+  /**
+   * Vertical spacing (points) above each bullet list item so items read as
+   * separate rows. iOS uses `paragraphSpacingBefore`; Android a `LineHeightSpan`.
+   * @default 0
+   */
+  listItemSpacing?: number;
 }
 
 type PendingRequest<T> = {
@@ -274,6 +288,7 @@ export const EnrichedMarkdownTextInput = ({
   formatMenuConfig,
   linkRegex: _linkRegex,
   writingDirection = 'first-strong',
+  listItemSpacing = 0,
   ...rest
 }: EnrichedMarkdownTextInputProps) => {
   const nativeRef = useRef<NativeRef | null>(null);
@@ -377,8 +392,16 @@ export const EnrichedMarkdownTextInput = ({
 
   const handleChangeState = useCallback(
     (e: NativeSyntheticEvent<OnChangeStateEvent>) => {
-      const { bold, italic, underline, strikethrough, spoiler, link, heading } =
-        e.nativeEvent;
+      const {
+        bold,
+        italic,
+        underline,
+        strikethrough,
+        spoiler,
+        link,
+        heading,
+        unorderedList,
+      } = e.nativeEvent;
       onChangeState?.({
         bold,
         italic,
@@ -387,6 +410,7 @@ export const EnrichedMarkdownTextInput = ({
         spoiler,
         link,
         heading,
+        unorderedList,
       });
     },
     [onChangeState]
@@ -466,9 +490,13 @@ export const EnrichedMarkdownTextInput = ({
       callback?.({
         text: selectedText,
         selection: { start: selectionStart, end: selectionEnd },
-        // The context menu reports inline format only; heading is block-level
-        // and not relevant to selection-based menu actions.
-        styleState: { ...styleState, heading: { level: 0 } },
+        // The context menu reports inline format only; block-level state
+        // (heading, list) is not relevant to selection-based menu actions.
+        styleState: {
+          ...styleState,
+          heading: { level: 0 },
+          unorderedList: { isActive: false, depth: 0 },
+        },
       });
     },
     []
@@ -495,6 +523,9 @@ export const EnrichedMarkdownTextInput = ({
       toggleStrikethrough: () => Commands.toggleStrikethrough(commandRef),
       toggleSpoiler: () => Commands.toggleSpoiler(commandRef),
       toggleHeading: (level) => Commands.toggleHeading(commandRef, level),
+      toggleUnorderedList: () => Commands.toggleUnorderedList(commandRef),
+      indentList: () => Commands.indentList(commandRef),
+      outdentList: () => Commands.outdentList(commandRef),
       setLink: (url) => Commands.setLink(commandRef, url),
       insertLink: (text, url) => Commands.insertLink(commandRef, text, url),
       insertMention: (displayText, url) =>
@@ -534,6 +565,7 @@ export const EnrichedMarkdownTextInput = ({
       multiline={multiline}
       cursorColor={cursorColor}
       selectionColor={selectionColor}
+      listItemSpacing={listItemSpacing}
       isOnChangeMarkdownSet={onChangeMarkdown !== undefined}
       onChangeText={handleChangeText as NativeProps['onChangeText']}
       onChangeMarkdown={handleChangeMarkdown as NativeProps['onChangeMarkdown']}
