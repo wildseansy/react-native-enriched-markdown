@@ -317,8 +317,24 @@ class EnrichedMarkdownTextInputView(
       handleNewlineBlockContinuation(editStart, deletedLength, insertedLength)
       text?.let { blockStore.normalizeAnchoredRangesToLines(it) }
       applyPendingStyles(editStart, insertedLength)
-      applyFormattingScopedToEdit(editStart, insertedLength)
-      syncEmptyListAnchor()
+      // Settle the empty-bullet ZWSP anchor (insert/strip the char and re-snap ranges)
+      // BEFORE stamping spans, so block formatting runs exactly once over the final
+      // text/ranges — otherwise a pre-ZWSP anchor span and the post-ZWSP span would
+      // both land on the empty line (the "double bullet" bug).
+      val anchorChanged = syncEmptyListAnchor(restamp = false)
+      // A newline insert/delete (list continuation/exit) or a ZWSP anchor change can
+      // move spans across lines, where a per-line scoped re-stamp would miss a stale
+      // bullet span. Re-stamp the whole document in those cases; scope to the edited
+      // line for ordinary typing to keep per-keystroke work bounded.
+      val touchedNewline =
+        anchorChanged ||
+          editTouchedNewline(editStart, deletedLength, insertedLength, currentText)
+      applyInlineFormatting()
+      if (touchedNewline) {
+        text?.let { formatter.applyBlockFormatting(it, blockStore.allRanges) }
+      } else {
+        applyBlockFormattingScopedToEdit(editStart, insertedLength)
+      }
 
       val editable = text
       if (editable != null) {
@@ -332,7 +348,9 @@ class EnrichedMarkdownTextInputView(
       eventEmitter.emitCaretRectChangeIfNeeded()
       isTextChanging = false
       didTextChangeRecently = true
-      lastProcessedText = currentText
+      // Record the post-pass text (block continuation / ZWSP sync may have mutated it),
+      // so the next change detects equality correctly and doesn't reprocess.
+      lastProcessedText = text?.toString() ?: currentText
     } finally {
       isProcessingTextChange = false
     }
@@ -453,8 +471,15 @@ class EnrichedMarkdownTextInputView(
 
     val prevContentLength = (prevLineStart until prevLineEnd).count { editable[it] != ZWSP }
     if (prevContentLength == 0) {
-      // Enter on an empty item exits the list: clear the now-empty block.
+      // Enter on an empty item exits the list: clear the block AND delete the newline
+      // the system just inserted, so the empty item collapses in place into a plain
+      // left-aligned paragraph instead of leaving an extra indented blank line. The
+      // ZWSP anchor on this line is then stripped by syncEmptyListAnchor.
       blockStore.removeBlock(prevLineStart, prevLineEnd, editable)
+      val newlineEnd = (editStart + insertedLength).coerceAtMost(editable.length)
+      runAsATransaction { editable.delete(editStart, newlineEnd) }
+      blockStore.adjustForEdit(editStart, insertedLength, 0)
+      setSelection(prevLineStart.coerceAtMost(editable.length))
       return
     }
 
@@ -480,24 +505,29 @@ class EnrichedMarkdownTextInputView(
     formatter.applyBlockFormatting(editable, blockStore.allRanges)
   }
 
+  /** Re-applies inline (character) formatting across the whole document. */
+  private fun applyInlineFormatting() {
+    val editable = text ?: return
+    formatter.applyFormatting(editable, formattingStore.allRanges)
+  }
+
   /**
-   * Re-applies inline formatting across the document, but re-normalizes block spans
-   * only on the paragraph(s) touched by an edit at `[editStart, editStart + insertedLength)`.
-   * Heading sizing is paragraph-scoped, so re-stamping only the edited line keeps
-   * per-keystroke work bounded instead of re-spanning the whole document.
+   * Re-stamps block spans only on the paragraph(s) touched by an edit at
+   * `[editStart, editStart + insertedLength)`. A block span covers its whole line, so
+   * re-stamping only the edited line keeps per-keystroke work bounded instead of
+   * re-spanning the whole document. Safe only for edits that stay within a line; a
+   * newline-crossing edit must re-stamp the whole document (see [onAfterTextChanged]).
    */
-  private fun applyFormattingScopedToEdit(
+  private fun applyBlockFormattingScopedToEdit(
     editStart: Int,
     insertedLength: Int,
   ) {
     val editable = text ?: return
-    formatter.applyFormatting(editable, formattingStore.allRanges)
-
     val length = editable.length
     val rawStart = editStart.coerceIn(0, length)
     val rawEnd = (editStart + insertedLength).coerceIn(rawStart, length)
 
-    // Expand the edit span to whole-line bounds: a heading span covers its line, so
+    // Expand the edit span to whole-line bounds: a block span covers its line, so
     // re-stamping must cover every line the edit touched, edge-to-edge.
     var lineStart = rawStart
     while (lineStart > 0 && editable[lineStart - 1] != '\n') lineStart--
@@ -505,6 +535,29 @@ class EnrichedMarkdownTextInputView(
     while (lineEnd < length && editable[lineEnd] != '\n') lineEnd++
 
     formatter.applyBlockFormatting(editable, blockStore.allRanges, lineStart, lineEnd)
+  }
+
+  /**
+   * True when the edit inserted or deleted a line break (so block spans may need to
+   * move across lines). Checks the inserted run in the current text and the deleted run
+   * in the pre-edit text.
+   */
+  private fun editTouchedNewline(
+    editStart: Int,
+    deletedLength: Int,
+    insertedLength: Int,
+    preEditText: String,
+  ): Boolean {
+    val editable = text
+    if (editable != null && insertedLength > 0) {
+      val end = (editStart + insertedLength).coerceAtMost(editable.length)
+      if ((editStart until end).any { editable[it].isLineBreak() }) return true
+    }
+    if (deletedLength > 0) {
+      val end = (editStart + deletedLength).coerceAtMost(preEditText.length)
+      if ((editStart until end).any { preEditText[it].isLineBreak() }) return true
+    }
+    return false
   }
 
   private fun applyFormattingAndEmit() {
@@ -733,10 +786,14 @@ class EnrichedMarkdownTextInputView(
    * an empty paragraph). Inserts a ZWSP on the caret's empty list line, and strips any
    * ZWSP whose line is no longer an empty list item. Guards against re-entrancy since
    * its insert/delete + setSelection loop back through the text/selection callbacks.
+   *
+   * @param restamp when true, re-applies block formatting after a change (selection /
+   *   command paths). The text-change pass passes false and stamps once afterwards.
+   * @return true if a ZWSP anchor was inserted or stripped (text/ranges mutated).
    */
-  private fun syncEmptyListAnchor() {
-    if (isManagingAnchor) return
-    val editable = text ?: return
+  private fun syncEmptyListAnchor(restamp: Boolean = true): Boolean {
+    if (isManagingAnchor) return false
+    val editable = text ?: return false
     isManagingAnchor = true
     var anchorChanged = false
     try {
@@ -767,27 +824,39 @@ class EnrichedMarkdownTextInputView(
           runAsATransaction { editable.insert(ls, ZWSP.toString()) }
           blockStore.adjustForEdit(ls, 0, 1)
           blockStore.normalizeAnchoredRangesToLines(editable)
-          applyFormatting()
           setSelection(ls + 1)
           anchorChanged = true
         }
       }
 
       if (anchorChanged) {
+        // Re-snap any range left zero-length by a strip so the next stamp is exact.
+        blockStore.normalizeAnchoredRangesToLines(editable)
+        // Stamp once here only when the caller won't (selection / command paths). The
+        // text-change pass passes restamp=false and stamps afterwards, so block spans
+        // are applied exactly once over the settled text — never twice on one line.
+        if (restamp) applyFormatting()
         lastProcessedText = editable.toString()
         if (emitMarkdown) eventEmitter.emitChangeMarkdown()
       }
       syncHintVisibility()
+      return anchorChanged
     } finally {
       isManagingAnchor = false
     }
   }
 
-  /** Hides the placeholder while a bullet is drawn on an otherwise empty editor (mirrors iOS). */
+  /**
+   * Controls placeholder visibility. The hint shows only on a truly empty editor with
+   * no block: as soon as there is any text OR any block range (e.g. a bullet started on
+   * an empty editor, whose only char is a ZWSP anchor), the hint is hidden so it never
+   * overlaps a marker. Mirrors the iOS placeholder-hide rule.
+   */
   private fun syncHintVisibility() {
-    val onlyAnchor = (text?.length ?: 0) == 0 || (text?.length == 1 && text?.get(0) == ZWSP)
-    val hideForBullet = onlyAnchor && unorderedListStateAtCursor().first
-    val target: CharSequence? = if (hideForBullet) "" else userHint
+    val content = text
+    val hasRealText = content != null && content.any { it != ZWSP }
+    val hasBlock = blockStore.allRanges.isNotEmpty()
+    val target: CharSequence? = if (hasRealText || hasBlock) "" else userHint
     if (hint != target) super.setHint(target)
   }
 

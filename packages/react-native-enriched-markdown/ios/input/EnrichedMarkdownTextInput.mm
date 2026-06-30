@@ -540,7 +540,12 @@ using namespace facebook::react;
 
 - (void)updatePlaceholderVisibility
 {
-  _placeholderLabel.hidden = (ENRMGetPlainText(_textView).length > 0);
+  // Hide the placeholder once there's any content OR any block has been started
+  // (e.g. an empty bullet/heading line with only a zero-length anchor): the block
+  // marker or indent would otherwise overlap the placeholder text.
+  BOOL hasText = ENRMGetPlainText(_textView).length > 0;
+  BOOL hasBlock = _blockStore.allRanges.count > 0;
+  _placeholderLabel.hidden = hasText || hasBlock;
 }
 
 #pragma mark - Markdown import
@@ -814,12 +819,28 @@ using namespace facebook::react;
 
   if (alreadyActive) {
     [_blockStore removeBlockInParagraphRange:paragraphRange inText:text];
+    // Clearing a block leaves no handler to own the paragraph's indent/spacing.
+    // Strip the block paragraph style from storage so a removed bullet de-indents
+    // to a plain, left-aligned paragraph instead of keeping the list indent
+    // (applyFormatting re-stamps the base style and writing direction below).
+    NSTextStorage *storage = _textView.textStorage;
+    NSRange clamped = NSIntersectionRange(paragraphRange, NSMakeRange(0, storage.length));
+    if (clamped.length > 0) {
+      [storage beginEditing];
+      [storage removeAttribute:NSParagraphStyleAttributeName range:clamped];
+      [storage endEditing];
+    }
   } else {
     [_blockStore setBlockType:type level:level forParagraphRange:paragraphRange inText:text];
   }
 
   [self applyFormatting];
   [self syncTypingAttributesWithCursorBlock];
+  if (alreadyActive) {
+    // The just-cleared line is a plain paragraph now; drop any list indent the
+    // typing attributes carried so the next typed character isn't indented.
+    [self clearListParagraphStyleFromTypingAttributes];
+  }
   [self updateEmptyBulletMarker];
   [self emitFormattingChanged];
 }
@@ -935,10 +956,19 @@ using namespace facebook::react;
 /// Intercepts on-screen Tab (indent) and Backspace at the start of a bullet item
 /// (outdent, then un-list at depth 0) so list nesting is editable from the
 /// software keyboard. Returns YES when handled, suppressing the default edit.
+///
+/// All checks are keyed off the CARET's own paragraph — the line the edit lands
+/// in (`NSMaxRange(range)`) — not the deletion target `range.location`, which for
+/// a backspace at a line's start is the previous line's trailing newline and
+/// belongs to the previous paragraph. Using the caret's line ensures that once a
+/// bullet is removed (its line becomes a plain paragraph) the next Backspace falls
+/// through to the normal delete (merging into the previous line) instead of
+/// re-toggling the marker.
 - (BOOL)handleListKeyForReplacementRange:(NSRange)range replacementText:(NSString *)text
 {
+  NSUInteger caret = NSMaxRange(range);
   NSInteger depth;
-  if (![self listStateForParagraphAtPosition:range.location depth:&depth]) {
+  if (![self listStateForParagraphAtPosition:caret depth:&depth]) {
     return NO;
   }
 
@@ -948,12 +978,12 @@ using namespace facebook::react;
     return YES;
   }
 
-  // Backspace at the very start of an item's content: outdent, or remove the
-  // marker entirely once at depth 0.
+  // Backspace at the very start of the caret's own item: outdent, or remove the
+  // marker entirely once at depth 0 (de-indenting the line to a plain paragraph).
   if (text.length == 0 && range.length == 1) {
     NSString *plainText = ENRMGetPlainText(_textView);
-    NSRange paragraphRange = [plainText paragraphRangeForRange:NSMakeRange(NSMaxRange(range), 0)];
-    BOOL atItemStart = NSMaxRange(range) == paragraphRange.location;
+    NSRange paragraphRange = [plainText paragraphRangeForRange:NSMakeRange(caret, 0)];
+    BOOL atItemStart = caret == paragraphRange.location;
     if (atItemStart) {
       if (depth > 0) {
         [self outdentList];
@@ -1035,10 +1065,23 @@ using namespace facebook::react;
   NSRange newParagraph = [text paragraphRangeForRange:NSMakeRange(newLineLocation, 0)];
 
   if (previousWasEmpty) {
-    // Return on an empty bullet exits the list: clear the marker from both the
-    // emptied source line and the new line.
+    // Return on an empty bullet exits the list: drop the block from both the
+    // emptied source line and the new line, and strip the list paragraph style
+    // those lines may carry in storage so they render as plain, left-aligned
+    // paragraphs (no leftover indent). The typing-attribute indent is cleared
+    // separately by the caller's post-edit sync.
     [_blockStore removeBlockInParagraphRange:originalParagraph inText:text];
     [_blockStore removeBlockInParagraphRange:newParagraph inText:text];
+
+    NSTextStorage *storage = _textView.textStorage;
+    [storage beginEditing];
+    for (NSRange paragraph : {originalParagraph, newParagraph}) {
+      NSRange clamped = NSIntersectionRange(paragraph, NSMakeRange(0, storage.length));
+      if (clamped.length > 0) {
+        [storage removeAttribute:NSParagraphStyleAttributeName range:clamped];
+      }
+    }
+    [storage endEditing];
     return;
   }
 
@@ -1175,6 +1218,45 @@ using namespace facebook::react;
   }
 
   _textView.typingAttributes = attrs;
+}
+
+/// Drops any paragraph style from the caret's typing attributes. Used when the
+/// caret's line is not a block (no heading, no bullet) so a list indent left over
+/// from a just-exited bullet doesn't indent the next typed character.
+- (void)clearListParagraphStyleFromTypingAttributes
+{
+  if (_textView.typingAttributes[NSParagraphStyleAttributeName] == nil) {
+    return;
+  }
+  NSMutableDictionary *attrs = [_textView.typingAttributes mutableCopy];
+  [attrs removeObjectForKey:NSParagraphStyleAttributeName];
+  _textView.typingAttributes = attrs;
+}
+
+/// Strips any list paragraph style left in storage on the paragraph(s) the given
+/// range touches, so a line that just lost its bullet renders flush-left with no
+/// residual indent. applyBlockRanges only adds paragraph styles to block ranges —
+/// it never clears them from a line that stopped being a block — so a bullet
+/// removal must explicitly undo the indent here. Pairs with
+/// clearListParagraphStyleFromTypingAttributes for the caret.
+- (void)clearListParagraphStyleFromStorageForRange:(NSRange)range
+{
+  NSTextStorage *storage = _textView.textStorage;
+  if (storage.length == 0) {
+    return;
+  }
+  NSRange clamped = NSIntersectionRange(range, NSMakeRange(0, storage.length));
+  if (clamped.length == 0) {
+    return;
+  }
+  NSRange paragraph = [storage.string paragraphRangeForRange:clamped];
+  NSRange paragraphClamped = NSIntersectionRange(paragraph, NSMakeRange(0, storage.length));
+  if (paragraphClamped.length == 0) {
+    return;
+  }
+  [storage beginEditing];
+  [storage removeAttribute:NSParagraphStyleAttributeName range:paragraphClamped];
+  [storage endEditing];
 }
 
 /// Re-clips every heading block to the single paragraph at its start. Headings
@@ -1989,9 +2071,13 @@ using namespace facebook::react;
   // Keep the caret's typing attributes aligned with a bullet line so the next
   // character continues the marker (UIKit drops custom typing attributes after
   // the first insertion, and a continued/empty item needs the list font+indent).
+  // A Return that EXITED the list leaves the prior list paragraph style lingering
+  // in the typing attributes, which would indent the new plain line — clear it.
   NSInteger cursorListDepth;
   if ([self unorderedListStateForCursorParagraph:&cursorListDepth]) {
     [self syncTypingAttributesWithCursorBlock];
+  } else if (_textView.typingAttributes[NSParagraphStyleAttributeName] != nil) {
+    [self clearListParagraphStyleFromTypingAttributes];
   }
 
   NSUInteger clampedEditLocation = MIN(editLocation, newLength);

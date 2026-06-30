@@ -15,18 +15,24 @@ tags:
 # second item is then indented one level via the toolbar.
 - tapOn:
     id: focus-button
+- waitForAnimationToEnd
 
 - tapOn:
     id: toolbar-unordered-list
+- waitForAnimationToEnd
 
 - inputText: 'First item'
+- waitForAnimationToEnd
 
 - pressKey: Enter
+- waitForAnimationToEnd
 
 - inputText: 'Second item'
+- waitForAnimationToEnd
 
 - tapOn:
     id: toolbar-indent
+- waitForAnimationToEnd
 
 - tapOn:
     id: blur-button
