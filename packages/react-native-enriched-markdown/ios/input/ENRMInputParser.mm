@@ -180,9 +180,23 @@ static int onEnterBlock(MD_BLOCKTYPE blockType, void *detail, void *userdata)
   auto *context = static_cast<ParseContext *>(userdata);
 
   // Bullet-list nesting is tracked by depth, not stored as its own block: the
-  // container UL only bumps the counter that its items' paragraphs read.
+  // container UL only bumps the counter that its items read.
   if (blockType == MD_BLOCK_UL) {
     context->listDepth++;
+    return 0;
+  }
+
+  // The list item is the unit that carries a line of bullet text. Tag the item
+  // itself (not its inner paragraph): md4c only emits MD_BLOCK_P inside list
+  // items for *loose* lists, so a tight list (no blank lines between items) has
+  // no paragraph to tag. The item accumulates all text in its subtree, including
+  // nested sublists; parseBlocks clips each item's range back to its own first
+  // line so a nested item doesn't extend its parent's range.
+  if (blockType == MD_BLOCK_LI) {
+    BlockInfo blockInfo;
+    blockInfo.type = ENRMInputBlockTypeUnorderedListItem;
+    blockInfo.level = context->listDepth > 0 ? context->listDepth - 1 : 0;
+    context->openBlockStack.push_back(blockInfo);
     return 0;
   }
 
@@ -196,14 +210,6 @@ static int onEnterBlock(MD_BLOCKTYPE blockType, void *detail, void *userdata)
   // Headings share one md4c block type but split into six ENRMInputBlockTypes by
   // level; map the resolved level onto the concrete heading type.
   blockInfo.type = (blockType == MD_BLOCK_H) ? ENRMBlockTypeForHeadingLevel(blockInfo.level) : mappedType;
-  // A paragraph inside a list is the list item's line. Retag it as a list item
-  // at the current nesting depth; tagging the leaf paragraph (not the enclosing
-  // MD_BLOCK_LI) keeps each item's range on its own line, so a nested sublist
-  // doesn't extend its parent item's range.
-  if (blockType == MD_BLOCK_P && context->listDepth > 0) {
-    blockInfo.type = ENRMInputBlockTypeUnorderedListItem;
-    blockInfo.level = context->listDepth - 1;
-  }
   context->openBlockStack.push_back(blockInfo);
   return 0;
 }
@@ -215,6 +221,16 @@ static int onLeaveBlock(MD_BLOCKTYPE blockType, void *, void *userdata)
   if (blockType == MD_BLOCK_UL) {
     if (context->listDepth > 0) {
       context->listDepth--;
+    }
+    return 0;
+  }
+
+  // List items are tagged in onEnterBlock (not via isSupportedBlock); resolve
+  // them here the same way as supported blocks.
+  if (blockType == MD_BLOCK_LI) {
+    if (!context->openBlockStack.empty()) {
+      context->resolvedBlocks.push_back(context->openBlockStack.back());
+      context->openBlockStack.pop_back();
     }
     return 0;
   }
@@ -434,6 +450,22 @@ static bool runMd4cParse(NSString *markdown, ParseContext &context)
     NSUInteger contentEnd = mapByteOffset(byteMap, blockInfo.contentEndByteOffset, context.bufferLength);
     if (contentEnd <= contentStart) {
       continue;
+    }
+
+    // A list item accumulates all text in its subtree, so a parent item's range
+    // runs through its nested sublist. Clip each item to its own first line so
+    // nested items keep their own (deeper) depth rather than being overwritten
+    // by the parent's range. Input list items are single-line.
+    if (blockInfo.type == ENRMInputBlockTypeUnorderedListItem && contentEnd <= markdown.length) {
+      NSRange newline = [markdown rangeOfString:@"\n"
+                                        options:0
+                                          range:NSMakeRange(contentStart, contentEnd - contentStart)];
+      if (newline.location != NSNotFound) {
+        contentEnd = newline.location;
+      }
+      if (contentEnd <= contentStart) {
+        continue;
+      }
     }
 
     [results addObject:[ENRMBlockRange rangeWithType:blockInfo.type
