@@ -1233,32 +1233,6 @@ using namespace facebook::react;
   _textView.typingAttributes = attrs;
 }
 
-/// Strips any list paragraph style left in storage on the paragraph(s) the given
-/// range touches, so a line that just lost its bullet renders flush-left with no
-/// residual indent. applyBlockRanges only adds paragraph styles to block ranges —
-/// it never clears them from a line that stopped being a block — so a bullet
-/// removal must explicitly undo the indent here. Pairs with
-/// clearListParagraphStyleFromTypingAttributes for the caret.
-- (void)clearListParagraphStyleFromStorageForRange:(NSRange)range
-{
-  NSTextStorage *storage = _textView.textStorage;
-  if (storage.length == 0) {
-    return;
-  }
-  NSRange clamped = NSIntersectionRange(range, NSMakeRange(0, storage.length));
-  if (clamped.length == 0) {
-    return;
-  }
-  NSRange paragraph = [storage.string paragraphRangeForRange:clamped];
-  NSRange paragraphClamped = NSIntersectionRange(paragraph, NSMakeRange(0, storage.length));
-  if (paragraphClamped.length == 0) {
-    return;
-  }
-  [storage beginEditing];
-  [storage removeAttribute:NSParagraphStyleAttributeName range:paragraphClamped];
-  [storage endEditing];
-}
-
 /// Re-clips every heading block to the single paragraph at its start. Headings
 /// never span more than one paragraph; after a newline splits a heading the
 /// stored range may cover two paragraphs, so we reset it to the first one
