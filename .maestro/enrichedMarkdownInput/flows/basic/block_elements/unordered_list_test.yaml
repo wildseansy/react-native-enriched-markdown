@@ -1,0 +1,37 @@
+appId: swmansion.enriched.markdown.example
+tags:
+  - input
+  - smoke
+  - unordered-list
+  - block
+---
+- launchApp
+
+- runFlow:
+    file: '../../../../subflows/move_to_playground.yaml'
+
+# Start a bullet list, then type two items separated by Return. Return on a
+# non-empty item must continue the list (new bullet at the same depth); the
+# second item is then indented one level via the toolbar.
+- tapOn:
+    id: focus-button
+
+- tapOn:
+    id: toolbar-unordered-list
+
+- inputText: 'First item'
+
+- pressKey: Enter
+
+- inputText: 'Second item'
+
+- tapOn:
+    id: toolbar-indent
+
+- tapOn:
+    id: blur-button
+
+- runFlow:
+    file: '../../../subflows/capture_or_assert_screenshot.yaml'
+    env:
+      SCREENSHOT_NAME: 'unordered_list_input'

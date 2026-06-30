@@ -140,6 +140,13 @@ BOOL applyInputStyleProps(ENRMInputFormatterStyle *style, const InputProps &newP
     changed = YES;
   }
 
+  // listItemSpacing is a top-level prop (not under markdownStyle), the leading
+  // spacing applied above each bullet item via the list paragraph style.
+  if (newProps.listItemSpacing != oldProps.listItemSpacing) {
+    style.listItemSpacing = newProps.listItemSpacing;
+    changed = YES;
+  }
+
 // Headings h1..h6 share an identical struct shape (fontSize / fontWeight /
 // color). Read each level into the formatter style's per-level heading config.
 #define ENRM_APPLY_HEADING_PROPS(levelNumber, headingKey)                                                              \

@@ -23,6 +23,16 @@ interface BlockHandler {
   val blockType: BlockType
 
   /**
+   * Whether the block continues onto the next line when the user presses Enter.
+   * A heading is single-line (Enter ends it, yielding a plain paragraph), so this
+   * is false; a list item continues at the same depth and exits only on an empty
+   * item, so it is true. The orchestrator consults this instead of hardcoding which
+   * blocks survive a newline, keeping Enter behavior handler-driven.
+   */
+  val continuesOnNewline: Boolean
+    get() = false
+
+  /**
    * Spans to apply over the block's line range. Returned spans are tagged with
    * [com.swmansion.enriched.markdown.input.formatting.MarkdownSpan] so the
    * formatter can clean up only spans it created. A heading raises the font

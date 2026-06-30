@@ -40,9 +40,10 @@ class BlockStore {
   ) {
     val (start, end) = paragraphBounds(paragraphStart, paragraphEnd, text)
     removeBlocksOverlapping(start, end)
-    // A heading on an empty line is kept as a zero-length anchor (see adjustForEdit);
-    // other blocks need real content, so an empty line yields no block.
-    if (end < start || (end == start && type !in BlockType.HEADINGS)) return
+    // An anchored block (heading or list item) on an empty line is kept as a
+    // zero-length anchor (see adjustForEdit); other blocks need real content, so an
+    // empty line yields no block.
+    if (end < start || (end == start && type !in BlockType.ANCHORED)) return
 
     val block = BlockRange(type, start, end, level)
     ranges.add(sortedInsertionIndex(start), block)
@@ -62,17 +63,17 @@ class BlockStore {
   }
 
   /**
-   * Re-snaps every heading range to its line bounds `[lineStart, lineEnd)` (lineEnd
-   * excluding the trailing newline). A heading is a single-paragraph block that spans
-   * its whole line, so after a text edit this grows the block over text typed into the
-   * line and shrinks it as text is removed — including collapsing to a zero-length
-   * anchor on an emptied line (kept so the line stays a heading). A newline ends the
-   * line, so a heading never bleeds onto the next paragraph. Other block types are
-   * left untouched.
+   * Re-snaps every anchored range (heading or list item) to its line bounds
+   * `[lineStart, lineEnd)` (lineEnd excluding the trailing newline). An anchored block
+   * is a single-paragraph block that spans its whole line, so after a text edit this
+   * grows the block over text typed into the line and shrinks it as text is removed —
+   * including collapsing to a zero-length anchor on an emptied line (kept so the line
+   * stays a heading / bullet). A newline ends the line, so a block never bleeds onto
+   * the next paragraph. Other block types are left untouched.
    */
-  fun normalizeHeadingRangesToLines(text: CharSequence) {
+  fun normalizeAnchoredRangesToLines(text: CharSequence) {
     for (range in ranges) {
-      if (range.type !in BlockType.HEADINGS) continue
+      if (range.type !in BlockType.ANCHORED) continue
       val anchor = range.start.coerceIn(0, text.length)
       var lineStart = anchor
       while (lineStart > 0 && text[lineStart - 1] != '\n') lineStart--
@@ -109,11 +110,12 @@ class BlockStore {
           }
 
           EditOverlap.FULLY_DELETED -> {
-            // A heading whose text is fully deleted persists as a zero-length block
-            // anchored at the (now empty) line start, so the line stays a heading
-            // until the user toggles it off or the line is merged/removed (those
-            // text-aware decisions live in the view). Other blocks are dropped.
-            if (range.type in BlockType.HEADINGS) {
+            // An anchored block (heading or list item) whose text is fully deleted
+            // persists as a zero-length block anchored at the (now empty) line start,
+            // so the line stays a heading / bullet until the user toggles it off or the
+            // line is merged/removed (those text-aware decisions live in the view).
+            // Other blocks are dropped.
+            if (range.type in BlockType.ANCHORED) {
               range.start = editLocation
               range.end = editLocation
             } else {
@@ -129,7 +131,7 @@ class BlockStore {
             val newEnd = editLocation + insertedLength
             val newLength = if (newEnd > range.start) newEnd - range.start else 0
             range.end = range.start + newLength
-            if (newLength == 0 && range.type !in BlockType.HEADINGS) indexesToRemove.add(idx)
+            if (newLength == 0 && range.type !in BlockType.ANCHORED) indexesToRemove.add(idx)
           }
 
           EditOverlap.CLIPPED_START -> {
@@ -138,15 +140,15 @@ class BlockStore {
             val oldLength = range.length
             range.start = newStart
             range.end = newStart + oldLength - charsClipped
-            if (range.length == 0 && range.type !in BlockType.HEADINGS) indexesToRemove.add(idx)
+            if (range.length == 0 && range.type !in BlockType.ANCHORED) indexesToRemove.add(idx)
           }
         }
       } else {
         when {
-          // A zero-length heading anchor (an emptied heading line) stays put on insert;
-          // the view re-normalizes heading ranges to their line bounds afterwards, which
-          // grows the block over text typed back into the line.
-          range.length == 0 && range.type in BlockType.HEADINGS && range.start == editLocation -> {
+          // A zero-length anchor (an emptied heading/list line) stays put on insert;
+          // the view re-normalizes anchored ranges to their line bounds afterwards,
+          // which grows the block over text typed back into the line.
+          range.length == 0 && range.type in BlockType.ANCHORED && range.start == editLocation -> {
             // anchor stays at editLocation; end is grown by the view's normalization
           }
 
@@ -166,9 +168,9 @@ class BlockStore {
       ranges.removeAt(idx)
     }
 
-    // Keep zero-length heading anchors (an emptied heading line that should stay a
-    // heading); drop every other collapsed range.
-    ranges.removeAll { it.length == 0 && it.type !in BlockType.HEADINGS }
+    // Keep zero-length anchors (an emptied heading/list line that should stay a
+    // heading / bullet); drop every other collapsed range.
+    ranges.removeAll { it.length == 0 && it.type !in BlockType.ANCHORED }
   }
 
   /**

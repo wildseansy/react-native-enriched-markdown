@@ -307,6 +307,14 @@
 
   [textStorage beginEditing];
 
+  // The block-type/level attributes are a read surface for the layout manager
+  // (it draws list markers by scanning runs), not a source of truth — the block
+  // store is. Clear them across the whole text first so a line that lost its
+  // block (toggled off) stops drawing a marker, then re-stamp below.
+  NSRange fullTextRange = NSMakeRange(0, textLength);
+  [textStorage removeAttribute:ENRMBlockTypeAttributeName range:fullTextRange];
+  [textStorage removeAttribute:ENRMBlockLevelAttributeName range:fullTextRange];
+
   for (ENRMBlockRange *blockRange in blockRanges) {
     if (blockRange.range.length == 0 || NSMaxRange(blockRange.range) > textLength) {
       continue;
@@ -340,6 +348,14 @@
 
     if (attributes.count > 0) {
       [textStorage addAttributes:attributes range:blockRange.range];
+    }
+
+    // Expose the block identity to the layout manager so it can draw the bullet
+    // marker for each list line at the right depth. Only list items need a glyph
+    // drawn; headings restyle via paragraph attributes alone.
+    if (blockRange.type == ENRMInputBlockTypeUnorderedListItem) {
+      [textStorage addAttribute:ENRMBlockTypeAttributeName value:@(blockRange.type) range:blockRange.range];
+      [textStorage addAttribute:ENRMBlockLevelAttributeName value:@(blockRange.level) range:blockRange.range];
     }
   }
 

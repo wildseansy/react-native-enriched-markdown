@@ -14,6 +14,8 @@ class OnChangeStateEvent(
   private val isSpoiler: Boolean,
   private val isLink: Boolean,
   private val headingLevel: Int,
+  private val isUnorderedList: Boolean,
+  private val unorderedListDepth: Int,
 ) : Event<OnChangeStateEvent>(surfaceId, viewId) {
   override fun getEventName(): String = EVENT_NAME
 
@@ -46,6 +48,13 @@ class OnChangeStateEvent(
       putMap(
         "heading",
         Arguments.createMap().apply { putInt("level", headingLevel) },
+      )
+      putMap(
+        "unorderedList",
+        Arguments.createMap().apply {
+          putBoolean("isActive", isUnorderedList)
+          putInt("depth", unorderedListDepth)
+        },
       )
     }
 

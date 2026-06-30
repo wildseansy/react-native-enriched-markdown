@@ -57,6 +57,17 @@ static inline NSInteger ENRMHeadingLevelForBlockType(ENRMInputBlockType type)
   return 0;
 }
 
+/// Whether an emptied line of this block type keeps a zero-length anchor (so the
+/// line stays the block) instead of reverting to a plain paragraph. True for
+/// headings and unordered list items: an emptied heading line stays a heading and
+/// an emptied bullet line stays a bullet (its marker keeps drawing) until the line
+/// is merged away. Plain paragraphs have nothing to anchor and return NO.
+static inline BOOL ENRMBlockTypePersistsWhenEmpty(ENRMInputBlockType type)
+{
+  return (type >= ENRMInputBlockTypeHeading1 && type <= ENRMInputBlockTypeHeading6) ||
+         type == ENRMInputBlockTypeUnorderedListItem;
+}
+
 /// NSAttributedString attribute carrying the ENRMInputBlockType (boxed NSNumber)
 /// of the paragraph a character belongs to. Used to persist block identity on
 /// the text storage across edits.

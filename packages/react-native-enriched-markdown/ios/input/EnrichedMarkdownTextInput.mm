@@ -76,7 +76,16 @@ using namespace facebook::react;
   struct {
     BOOL bold, italic, underline, strikethrough, spoiler, link, initialized;
     NSInteger headingLevel;
+    BOOL unorderedList;
+    NSInteger unorderedListDepth;
   } _prevState;
+
+  // Block type/level of the line being edited, captured before a text change so
+  // a Return that continues a list (or an autocorrect/paste that replaces the
+  // line) can restore the right block on the resulting line(s).
+  ENRMInputBlockType _preEditBlockType;
+  NSInteger _preEditBlockLevel;
+  BOOL _preEditParagraphWasEmpty;
 
   std::optional<CGRect> _prevCaretRect;
 
@@ -569,7 +578,7 @@ using namespace facebook::react;
 
   [_formattingStore adjustForEditAtLocation:editLocation deletedLength:selection.length insertedLength:text.length];
   [_blockStore adjustForEditAtLocation:editLocation deletedLength:selection.length insertedLength:text.length];
-  [self dropStaleEmptyHeadings];
+  [self dropStaleEmptyBlockAnchors];
 
   for (ENRMFormattingRange *range in ranges) {
     NSRange shifted = NSMakeRange(range.range.location + editLocation, range.range.length);
@@ -811,7 +820,293 @@ using namespace facebook::react;
 
   [self applyFormatting];
   [self syncTypingAttributesWithCursorBlock];
+  [self updateEmptyBulletMarker];
   [self emitFormattingChanged];
+}
+
+- (void)toggleUnorderedList
+{
+  [self toggleBlockType:ENRMInputBlockTypeUnorderedListItem level:0];
+}
+
+- (void)indentList
+{
+  [self changeListDepthBy:1];
+}
+
+- (void)outdentList
+{
+  [self changeListDepthBy:-1];
+}
+
+/// Adjusts the nesting depth of the cursor's bullet item by `delta`, clamped to
+/// [0, kENRMMaxListDepth]. QoL on the boundaries: indent on a non-list paragraph
+/// starts a depth-0 bullet (ignored on headings), and outdent past depth 0
+/// removes the marker (back to a plain paragraph).
+- (void)changeListDepthBy:(NSInteger)delta
+{
+  NSInteger currentDepth;
+  if (![self unorderedListStateForCursorParagraph:&currentDepth]) {
+    if (delta > 0 && [self headingLevelForCursorParagraph] == 0) {
+      [self toggleUnorderedList];
+    }
+    return;
+  }
+
+  if (delta < 0 && currentDepth == 0) {
+    [self toggleUnorderedList];
+    return;
+  }
+
+  NSInteger newDepth = MIN(MAX(currentDepth + delta, (NSInteger)0), kENRMMaxListDepth);
+  if (newDepth == currentDepth) {
+    return;
+  }
+
+  NSString *text = ENRMGetPlainText(_textView);
+  NSRange paragraphRange = [text paragraphRangeForRange:_textView.selectedRange];
+  [_blockStore setBlockType:ENRMInputBlockTypeUnorderedListItem
+                      level:newDepth
+          forParagraphRange:paragraphRange
+                     inText:text];
+
+  [self applyFormatting];
+  [self syncTypingAttributesWithCursorBlock];
+  [self updateEmptyBulletMarker];
+  [self emitFormattingChanged];
+}
+
+/// Whether the caret's paragraph is a bullet item, and at what depth. Mirrors
+/// headingLevelForCursorParagraph: matches by line start so an empty bullet line
+/// (zero-length anchor) and the caret at an item's end both register. Writes the
+/// depth into `outDepth` when non-NULL.
+- (BOOL)unorderedListStateForCursorParagraph:(nullable NSInteger *)outDepth
+{
+  NSString *text = _textView.textStorage.string;
+  NSRange paragraph = [text paragraphRangeForRange:_textView.selectedRange];
+  for (ENRMBlockRange *block in _blockStore.allRanges) {
+    if (block.type == ENRMInputBlockTypeUnorderedListItem && block.range.location == paragraph.location) {
+      if (outDepth) {
+        *outDepth = block.level;
+      }
+      return YES;
+    }
+  }
+  if (outDepth) {
+    *outDepth = 0;
+  }
+  return NO;
+}
+
+/// Records the block kind/level of the line being edited before the change, so a
+/// Return that continues a list can recover the previous item's depth and an
+/// in-line replacement (autocorrect/paste) that wipes the line can heal it.
+- (void)capturePreEditBlockForRange:(NSRange)range
+{
+  _preEditBlockType = ENRMInputBlockTypeParagraph;
+  _preEditBlockLevel = 0;
+
+  NSString *text = _textView.textStorage.string;
+  NSRange paragraph = [text paragraphRangeForRange:range];
+  for (ENRMBlockRange *block in _blockStore.allRanges) {
+    if (block.range.location == paragraph.location) {
+      _preEditBlockType = block.type;
+      _preEditBlockLevel = block.level;
+      return;
+    }
+  }
+}
+
+/// Whether the caret's paragraph had no glyph content at the start of the edit
+/// (an empty line). Used to decide whether Return continues or exits the list.
+- (BOOL)preEditParagraphWasEmpty:(NSRange)range
+{
+  NSString *text = _textView.textStorage.string;
+  if (text.length == 0) {
+    return YES;
+  }
+  NSRange paragraph = [text paragraphRangeForRange:range];
+  if (paragraph.length == 0) {
+    return YES;
+  }
+  return [[text substringWithRange:paragraph] isEqualToString:@"\n"];
+}
+
+/// Intercepts on-screen Tab (indent) and Backspace at the start of a bullet item
+/// (outdent, then un-list at depth 0) so list nesting is editable from the
+/// software keyboard. Returns YES when handled, suppressing the default edit.
+- (BOOL)handleListKeyForReplacementRange:(NSRange)range replacementText:(NSString *)text
+{
+  NSInteger depth;
+  if (![self listStateForParagraphAtPosition:range.location depth:&depth]) {
+    return NO;
+  }
+
+  // Tab indents the current item.
+  if ([text isEqualToString:@"\t"]) {
+    [self indentList];
+    return YES;
+  }
+
+  // Backspace at the very start of an item's content: outdent, or remove the
+  // marker entirely once at depth 0.
+  if (text.length == 0 && range.length == 1) {
+    NSString *plainText = ENRMGetPlainText(_textView);
+    NSRange paragraphRange = [plainText paragraphRangeForRange:NSMakeRange(NSMaxRange(range), 0)];
+    BOOL atItemStart = NSMaxRange(range) == paragraphRange.location;
+    if (atItemStart) {
+      if (depth > 0) {
+        [self outdentList];
+      } else {
+        [self toggleUnorderedList];
+      }
+      return YES;
+    }
+  }
+
+  return NO;
+}
+
+/// Backspace at the document start (caret at 0) never fires the text-change
+/// delegate — nothing precedes the caret — so the first line's bullet has to be
+/// outdented/removed here. Returns YES when handled.
+- (BOOL)handleBackspaceAtDocumentStart
+{
+  NSRange selection = _textView.selectedRange;
+  if (selection.location != 0 || selection.length != 0) {
+    return NO;
+  }
+  NSInteger depth;
+  if (![self unorderedListStateForCursorParagraph:&depth]) {
+    return NO;
+  }
+  if (depth > 0) {
+    [self outdentList];
+  } else {
+    [self toggleUnorderedList];
+  }
+  return YES;
+}
+
+/// Whether the paragraph containing `position` is a bullet item, writing its
+/// depth into `outDepth`. Like unorderedListStateForCursorParagraph but for an
+/// arbitrary position (the about-to-be-edited range), since the caret hasn't
+/// moved yet when a replacement is intercepted.
+- (BOOL)listStateForParagraphAtPosition:(NSUInteger)position depth:(NSInteger *)outDepth
+{
+  NSString *text = _textView.textStorage.string;
+  if (position > text.length) {
+    return NO;
+  }
+  NSRange paragraph = [text paragraphRangeForRange:NSMakeRange(position, 0)];
+  for (ENRMBlockRange *block in _blockStore.allRanges) {
+    if (block.type == ENRMInputBlockTypeUnorderedListItem && block.range.location == paragraph.location) {
+      if (outDepth) {
+        *outDepth = block.level;
+      }
+      return YES;
+    }
+  }
+  return NO;
+}
+
+/// Reconciles bullet blocks after a newline-only insertion (pressing Return). The
+/// block store grows the previous item's block to span both lines; split it back
+/// so the continuation behaves like a list: a Return inside a non-empty item
+/// starts a new item at the same depth, while a Return on an empty item exits the
+/// list (both lines become plain paragraphs). Headings never continue — they were
+/// already clipped to their first paragraph by the caller.
+- (void)reconcileBlockContinuationAfterNewlineAt:(NSUInteger)newlineLocation previousItemWasEmpty:(BOOL)previousWasEmpty
+{
+  // Ask the pre-edit line's block handler whether Return continues the block
+  // (a new block of the same type/level) or ends it. List items continue;
+  // headings do not. The decision lives in the handler, not hardcoded here.
+  id<ENRMBlockHandler> handler = [_formatter handlerForBlockType:_preEditBlockType];
+  if (!handler || ![handler respondsToSelector:@selector(continuesOnNewline)] || !handler.continuesOnNewline) {
+    return;
+  }
+
+  NSString *text = ENRMGetPlainText(_textView);
+  NSUInteger newLineLocation = newlineLocation + 1;
+  if (newLineLocation > text.length) {
+    return;
+  }
+  NSRange originalParagraph = [text paragraphRangeForRange:NSMakeRange(newlineLocation, 0)];
+  NSRange newParagraph = [text paragraphRangeForRange:NSMakeRange(newLineLocation, 0)];
+
+  if (previousWasEmpty) {
+    // Return on an empty bullet exits the list: clear the marker from both the
+    // emptied source line and the new line.
+    [_blockStore removeBlockInParagraphRange:originalParagraph inText:text];
+    [_blockStore removeBlockInParagraphRange:newParagraph inText:text];
+    return;
+  }
+
+  // Keep the source line its block at its level, and start the new line as a
+  // fresh block of the same type/level (e.g. a sibling bullet at the same depth).
+  [_blockStore setBlockType:_preEditBlockType level:_preEditBlockLevel forParagraphRange:originalParagraph inText:text];
+  [_blockStore setBlockType:_preEditBlockType level:_preEditBlockLevel forParagraphRange:newParagraph inText:text];
+}
+
+/// Drives the layout manager's empty-line bullet: a just-toggled or just-continued
+/// bullet line has no character to anchor the marker to, so the manager is told
+/// the line's location/depth/font explicitly. Cleared whenever the caret isn't on
+/// an empty bullet line. Also stamps the list paragraph style onto a mid-document
+/// empty line so its caret indents and the marker positions before any keystroke.
+- (void)updateEmptyBulletMarker
+{
+  NSString *text = ENRMGetPlainText(_textView);
+  NSRange selection = _textView.selectedRange;
+  BOOL show = NO;
+  NSUInteger location = 0;
+  NSInteger depth = 0;
+
+  NSInteger cursorDepth;
+  if (selection.length == 0 && [self unorderedListStateForCursorParagraph:&cursorDepth]) {
+    NSRange paragraphRange = text.length == 0 ? NSMakeRange(0, 0) : [text paragraphRangeForRange:selection];
+    NSString *paragraphText = text.length == 0 ? @"" : [text substringWithRange:paragraphRange];
+    BOOL empty = paragraphText.length == 0 || [paragraphText isEqualToString:@"\n"];
+    if (empty) {
+      show = YES;
+      location = paragraphRange.location;
+      depth = cursorDepth;
+
+      // A mid-document empty bullet line is just a newline with no paragraph
+      // style, so it lays out flush left — the caret stays un-indented and the
+      // marker is drawn off the left edge (clipped). Stamp the list paragraph
+      // style onto the line so it indents and the bullet positions immediately,
+      // before any character. (A trailing empty line uses the extra line
+      // fragment, which the layout manager handles separately.)
+      if (paragraphRange.length > 0) {
+        NSMutableParagraphStyle *paragraph = [[NSMutableParagraphStyle alloc] init];
+        CGFloat indent = (depth + 1) * kENRMListIndentPerDepth;
+        paragraph.firstLineHeadIndent = indent;
+        paragraph.headIndent = indent;
+        paragraph.paragraphSpacingBefore = _formatterStyle.listItemSpacing;
+        NSTextStorage *storage = _textView.textStorage;
+        [storage beginEditing];
+        [storage addAttribute:NSParagraphStyleAttributeName value:paragraph range:paragraphRange];
+        [storage endEditing];
+      }
+    }
+  }
+
+  _layoutManager.emptyBulletDepth = show ? depth : -1;
+  _layoutManager.emptyBulletLocation = location;
+  _layoutManager.emptyBulletFont = _formatterStyle.baseFont;
+  _layoutManager.emptyBulletColor = _formatterStyle.baseTextColor;
+  _layoutManager.listItemSpacing = _formatterStyle.listItemSpacing;
+
+  // An empty editor never runs the formatter (it early-returns at length 0), so
+  // the trailing/extra line fragment the marker draws into isn't laid out yet —
+  // force it so the bullet appears before the first keystroke.
+  if (show && text.length == 0) {
+    [_layoutManager ensureLayoutForTextContainer:_textView.textContainer];
+  }
+  ENRMSetNeedsDisplay(_textView);
+
+  // The empty-editor bullet would otherwise overlap the placeholder.
+  [self updatePlaceholderVisibility];
 }
 
 /// Heading level (1-6, or 0) of the paragraph the caret sits in. Unlike a
@@ -862,6 +1157,23 @@ using namespace facebook::react;
   attrs[NSFontAttributeName] = font;
   RCTUIColor *headingColor = headingLevel >= 1 ? [_formatterStyle headingColorForLevel:headingLevel] : nil;
   attrs[NSForegroundColorAttributeName] = headingColor ?: _formatterStyle.baseTextColor;
+
+  // On a bullet line, carry the list paragraph style in the typing attributes so
+  // the caret sits at the marker indent and the bullet draws before the first
+  // keystroke — without it the first typed char would shift the caret rightward.
+  // Headings need no paragraph style here (they only change font), so clear it.
+  NSInteger listDepth;
+  if ([self unorderedListStateForCursorParagraph:&listDepth]) {
+    NSMutableParagraphStyle *paragraph = [[NSMutableParagraphStyle alloc] init];
+    CGFloat indent = (listDepth + 1) * kENRMListIndentPerDepth;
+    paragraph.firstLineHeadIndent = indent;
+    paragraph.headIndent = indent;
+    paragraph.paragraphSpacingBefore = _formatterStyle.listItemSpacing;
+    attrs[NSParagraphStyleAttributeName] = paragraph;
+  } else {
+    [attrs removeObjectForKey:NSParagraphStyleAttributeName];
+  }
+
   _textView.typingAttributes = attrs;
 }
 
@@ -877,7 +1189,7 @@ using namespace facebook::react;
       continue;
     }
     // Keep zero-length headings (empty-line anchors) untouched here; their
-    // validity is reconciled by dropStaleEmptyHeadings.
+    // validity is reconciled by dropStaleEmptyBlockAnchors.
     if (block.range.length == 0) {
       continue;
     }
@@ -888,16 +1200,17 @@ using namespace facebook::react;
   }
 }
 
-/// Removes zero-length heading anchors that no longer sit at the start of an
-/// empty line. An emptied heading line keeps a zero-length block (so the line
-/// stays a heading), but once that line is merged away — e.g. Backspace at its
-/// start joining the previous line — the anchor lands inside a non-empty
-/// paragraph and must be dropped so the merged line is a plain paragraph.
-- (void)dropStaleEmptyHeadings
+/// Removes zero-length block anchors (headings and bullet items) that no longer
+/// sit at the start of an empty line. An emptied heading/bullet line keeps a
+/// zero-length block (so the line stays that block), but once that line is merged
+/// away — e.g. Backspace at its start joining the previous line — the anchor
+/// lands inside a non-empty paragraph and must be dropped so the merged line is a
+/// plain paragraph.
+- (void)dropStaleEmptyBlockAnchors
 {
   NSString *text = _textView.textStorage.string;
   for (ENRMBlockRange *block in _blockStore.allRanges) {
-    if (ENRMHeadingLevelForBlockType(block.type) == 0 || block.range.length > 0) {
+    if (!ENRMBlockTypePersistsWhenEmpty(block.type) || block.range.length > 0) {
       continue;
     }
     NSUInteger anchor = block.range.location;
@@ -1386,9 +1699,13 @@ using namespace facebook::react;
 
   NSInteger headingLevel = [self headingLevelForCursorParagraph];
 
+  NSInteger listDepth = 0;
+  BOOL unorderedListActive = [self unorderedListStateForCursorParagraph:&listDepth];
+
   if (_prevState.initialized && _prevState.bold == boldActive && _prevState.italic == italicActive &&
       _prevState.underline == underlineActive && _prevState.strikethrough == strikethroughActive &&
-      _prevState.spoiler == spoilerActive && _prevState.link == linkActive && _prevState.headingLevel == headingLevel) {
+      _prevState.spoiler == spoilerActive && _prevState.link == linkActive && _prevState.headingLevel == headingLevel &&
+      _prevState.unorderedList == unorderedListActive && _prevState.unorderedListDepth == listDepth) {
     return;
   }
 
@@ -1399,6 +1716,8 @@ using namespace facebook::react;
   _prevState.spoiler = spoilerActive;
   _prevState.link = linkActive;
   _prevState.headingLevel = headingLevel;
+  _prevState.unorderedList = unorderedListActive;
+  _prevState.unorderedListDepth = listDepth;
   _prevState.initialized = YES;
 
   emitter->onChangeState({
@@ -1409,6 +1728,7 @@ using namespace facebook::react;
       .spoiler = {.isActive = spoilerActive},
       .link = {.isActive = linkActive},
       .heading = {.level = static_cast<int>(headingLevel)},
+      .unorderedList = {.isActive = unorderedListActive, .depth = static_cast<int>(listDepth)},
   });
 }
 
@@ -1598,7 +1918,7 @@ using namespace facebook::react;
 
   // An emptied heading line keeps a zero-length anchor (so it stays a heading);
   // drop any such anchor whose line was merged/removed by this edit.
-  [self dropStaleEmptyHeadings];
+  [self dropStaleEmptyBlockAnchors];
 
   if (insertedLength > 0) {
     NSRange insertedRange = NSMakeRange(editLocation, insertedLength);
@@ -1638,6 +1958,14 @@ using namespace facebook::react;
     for (NSNumber *styleNum in _pendingStyleRemovals) {
       [_formattingStore removeType:(ENRMInputStyleType)styleNum.integerValue inRange:insertedRange];
     }
+
+    // A newline-only insertion is Return: ask the previous line's block handler
+    // whether to continue the block (e.g. a sibling bullet) or end it. (Pasted/
+    // typed glyph content keeps the block the store already grew; pasted markdown
+    // lists arrive via replaceTextInRange:.)
+    if (!insertedHasGlyphContent && insertedLength == 1) {
+      [self reconcileBlockContinuationAfterNewlineAt:editLocation previousItemWasEmpty:_preEditParagraphWasEmpty];
+    }
   }
 
   _lastTextLength = newLength;
@@ -1645,9 +1973,10 @@ using namespace facebook::react;
 #if !TARGET_OS_OSX
   if (newLength == 0) {
     // Emptying the document normally reverts to the base font, but if a heading
-    // anchor survives (the whole doc was a heading and its text was deleted),
-    // keep typing heading-sized so the empty heading line persists.
-    if ([self headingLevelForCursorParagraph] > 0) {
+    // or bullet anchor survives (the whole doc was that block and its text was
+    // deleted), keep its typing context so the empty block line persists.
+    NSInteger emptyDocDepth;
+    if ([self headingLevelForCursorParagraph] > 0 || [self unorderedListStateForCursorParagraph:&emptyDocDepth]) {
       [self syncTypingAttributesWithCursorBlock];
     } else {
       [self resetBaseTypingAttributes];
@@ -1656,6 +1985,14 @@ using namespace facebook::react;
 #endif
 
   [self applyFormatting];
+
+  // Keep the caret's typing attributes aligned with a bullet line so the next
+  // character continues the marker (UIKit drops custom typing attributes after
+  // the first insertion, and a continued/empty item needs the list font+indent).
+  NSInteger cursorListDepth;
+  if ([self unorderedListStateForCursorParagraph:&cursorListDepth]) {
+    [self syncTypingAttributesWithCursorBlock];
+  }
 
   NSUInteger clampedEditLocation = MIN(editLocation, newLength);
   NSUInteger clampedInsertedLength = MIN(insertedLength, newLength - clampedEditLocation);
@@ -1670,6 +2007,7 @@ using namespace facebook::react;
   [self emitCaretRectChangeIfNeeded];
   [self requestHeightUpdate];
   [self scheduleRelayoutIfNeeded];
+  [self updateEmptyBulletMarker];
 }
 
 #pragma mark - Text view delegate
@@ -1714,10 +2052,11 @@ using namespace facebook::react;
       NSString *paragraphText = [text substringWithRange:paragraphRange];
       BOOL isEmpty = paragraphText.length == 0 || [paragraphText isEqualToString:@"\n"];
       if (isEmpty) {
-        // An empty line normally resets to the base font, but an empty heading
-        // line keeps a zero-length anchor and must stay heading-sized so the
-        // caret and subsequent typing render as a heading.
-        if ([self headingLevelForCursorParagraph] > 0) {
+        // An empty line normally resets to the base font, but an empty heading or
+        // bullet line keeps a zero-length anchor and must stay block-styled so the
+        // caret, marker, and subsequent typing render as the block.
+        NSInteger emptyLineDepth;
+        if ([self headingLevelForCursorParagraph] > 0 || [self unorderedListStateForCursorParagraph:&emptyLineDepth]) {
           [self syncTypingAttributesWithCursorBlock];
         } else {
           NSMutableDictionary *attrs = [NSMutableDictionary dictionary];
@@ -1735,7 +2074,12 @@ using namespace facebook::react;
   if ([self deleteLinkForReplacementRange:range replacementText:text]) {
     return NO;
   }
+  if ([self handleListKeyForReplacementRange:range replacementText:text]) {
+    return NO;
+  }
   _preEditSelectedRange = _lastSelectedRange;
+  [self capturePreEditBlockForRange:range];
+  _preEditParagraphWasEmpty = [self preEditParagraphWasEmpty:range];
   _isTextChanging = YES;
   [self stripLinkTypingAttributes];
   return YES;
@@ -1799,6 +2143,7 @@ using namespace facebook::react;
   [self updateActiveMention];
   [self emitOnChangeState];
   [self emitCaretRectChangeIfNeeded];
+  [self updateEmptyBulletMarker];
 }
 
 #else

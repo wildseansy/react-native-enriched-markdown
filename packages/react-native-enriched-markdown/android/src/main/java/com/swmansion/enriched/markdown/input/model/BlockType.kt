@@ -18,6 +18,7 @@ enum class BlockType {
   HEADING_4,
   HEADING_5,
   HEADING_6,
+  UNORDERED_LIST_ITEM,
   ;
 
   companion object {
@@ -26,9 +27,21 @@ enum class BlockType {
       listOf(HEADING_1, HEADING_2, HEADING_3, HEADING_4, HEADING_5, HEADING_6)
 
     /**
+     * Block types whose empty line persists as a zero-length anchor (rather than
+     * reverting to a plain paragraph) until the user toggles them off. Headings keep
+     * their level on an emptied line; a bullet keeps its marker on an emptied item.
+     * Used by [com.swmansion.enriched.markdown.input.formatting.BlockStore] so the
+     * anchor logic is shared instead of duplicated per block kind.
+     */
+    val ANCHORED: Set<BlockType> = HEADINGS.toSet() + UNORDERED_LIST_ITEM
+
+    /**
      * Maps an H-level (1-6) to its [BlockType], or null when out of range. Used by
      * the parser to turn an AST heading node's `level` attribute into a block type.
      */
     fun forHeadingLevel(level: Int): BlockType? = HEADINGS.getOrNull(level - 1)
   }
 }
+
+/** Maximum bullet-list nesting depth (0-based), so indent can't run away unbounded. */
+const val MAX_LIST_DEPTH = 5
