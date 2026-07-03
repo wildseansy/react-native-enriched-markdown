@@ -29,15 +29,28 @@ NS_ASSUME_NONNULL_BEGIN
 /// the implicit paragraph default).
 - (void)removeBlockInParagraphRange:(NSRange)range inText:(NSString *)text;
 
-/// Removes a specific block instance (identity comparison). Used to drop a
-/// zero-length heading anchor without disturbing other blocks on the same line.
-- (void)removeBlock:(ENRMBlockRange *)block;
-
-/// Shifts/clips block ranges to follow a text edit, using the same overlap
-/// classification shape as ENRMFormattingStore.
+/// Shifts/clips block ranges to follow a text edit, using the shared
+/// ENRMRangeEditAdjustment classification, with heading persistence layered on
+/// top: a heading whose text is deleted exactly to its end collapses to a
+/// zero-length anchor at the edit location (its line survives and stays a
+/// heading) instead of being removed, and existing zero-length anchors are
+/// shifted/kept/dropped with their line.
 - (void)adjustForEditAtLocation:(NSUInteger)location
                   deletedLength:(NSUInteger)deletedLength
                  insertedLength:(NSUInteger)insertedLength;
+
+/// Re-normalizes every stored range back to the whole-line bounds of the line
+/// containing its start (excluding the line terminator). Call after
+/// adjustForEditAtLocation: once `text` is final: the edit adjustment
+/// deliberately leaves characters inserted at a range's start or end outside
+/// the range (matching ENRMFormattingStore's convention), and a newline typed
+/// inside a range leaves it spanning two lines. Re-snapping to line bounds
+/// re-absorbs edge-typed characters, clips a split range to its first line
+/// (the text after the caret becomes a plain paragraph), and drops blocks
+/// that a line-join landed on an earlier block's line (first wins). On an
+/// empty line a heading persists as a zero-length anchor; any other collapsed
+/// range is dropped. Idempotent: ranges already line-scoped are untouched.
+- (void)normalizeToLineBoundsInText:(NSString *)text;
 
 @end
 

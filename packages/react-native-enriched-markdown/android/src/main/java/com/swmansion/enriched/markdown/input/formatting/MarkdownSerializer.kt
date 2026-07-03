@@ -1,10 +1,13 @@
 package com.swmansion.enriched.markdown.input.formatting
 
+import android.util.Log
 import com.swmansion.enriched.markdown.input.model.BlockRange
 import com.swmansion.enriched.markdown.input.model.FormattingRange
 import com.swmansion.enriched.markdown.input.model.StyleType
 
 object MarkdownSerializer {
+  private const val TAG = "MarkdownSerializer"
+
   /**
    * Block-aware serialization: serializes inline styles exactly as the inline-only
    * overload, then prepends each line's block prefix. [blockPrefixProvider] is
@@ -29,18 +32,19 @@ object MarkdownSerializer {
     val markdownLines = inlineMarkdown.split("\n").toMutableList()
 
     // Inline delimiters never cross a newline, so the line partition is preserved.
-    // If this ever breaks, prefixes would land on the wrong lines — fail loudly
-    // rather than silently emitting unprefixed (or misprefixed) markdown.
-    check(plainLines.size == markdownLines.size) {
-      "Block serialization line-count invariant violated: plain=${plainLines.size} markdown=${markdownLines.size}"
+    // If this ever breaks, prefixes would land on the wrong lines. Contract on
+    // both platforms: log and fall back to inline-only output — a library must
+    // not crash the host app over lost block prefixes.
+    if (plainLines.size != markdownLines.size) {
+      Log.e(TAG, "Block serialization line-count invariant violated: plain=${plainLines.size} markdown=${markdownLines.size}")
+      return inlineMarkdown
     }
 
-    // Plain-text character offset at the start of each line.
     val lineStartOffsets = IntArray(plainLines.size)
     var runningOffset = 0
     for (i in plainLines.indices) {
       lineStartOffsets[i] = runningOffset
-      runningOffset += plainLines[i].length + 1 // +1 for the '\n' separator
+      runningOffset += plainLines[i].length + 1
     }
 
     for (blockRange in blockRanges) {
@@ -50,8 +54,6 @@ object MarkdownSerializer {
       for (lineIndex in plainLines.indices) {
         val lineStart = lineStartOffsets[lineIndex]
         val lineEnd = lineStart + plainLines[lineIndex].length
-        // A block claims a line if their ranges intersect (block ranges are
-        // line-scoped, so this covers single- and multi-line blocks).
         if (lineEnd >= blockRange.start && lineStart < blockRange.end) {
           markdownLines[lineIndex] = prefix + markdownLines[lineIndex]
         }

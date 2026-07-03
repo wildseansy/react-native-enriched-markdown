@@ -569,7 +569,13 @@ using namespace facebook::react;
 
   [_formattingStore adjustForEditAtLocation:editLocation deletedLength:selection.length insertedLength:text.length];
   [_blockStore adjustForEditAtLocation:editLocation deletedLength:selection.length insertedLength:text.length];
-  [self dropStaleEmptyHeadings];
+  // Order matters: drop headings orphaned by a line merge (judged on the
+  // still-unsnapped range) BEFORE re-snapping to line bounds, so a merged range
+  // doesn't first grow over the line it merged into and escape the prune.
+  // Normalization then re-absorbs edge-typed characters, clips a newline split
+  // to the first line, and keeps empty-line heading anchors.
+  [self pruneOrphanedHeadingBlocks];
+  [_blockStore normalizeToLineBoundsInText:ENRMGetPlainText(_textView)];
 
   for (ENRMFormattingRange *range in ranges) {
     NSRange shifted = NSMakeRange(range.range.location + editLocation, range.range.length);
@@ -805,8 +811,21 @@ using namespace facebook::react;
 
   if (alreadyActive) {
     [_blockStore removeBlockInParagraphRange:paragraphRange inText:text];
-  } else {
+  } else if (paragraphRange.length == 0) {
     [_blockStore setBlockType:type level:level forParagraphRange:paragraphRange inText:text];
+  } else {
+    // Blocks are single-paragraph: set one range per paragraph the selection
+    // touches, not one range spanning them all — otherwise the next edit's
+    // line normalization would clip the block to its first line.
+    [text
+        enumerateSubstringsInRange:paragraphRange
+                           options:NSStringEnumerationByParagraphs | NSStringEnumerationSubstringNotRequired
+                        usingBlock:^(NSString *substring, NSRange substringRange, NSRange enclosingRange, BOOL *stop) {
+                          [self->_blockStore setBlockType:type
+                                                    level:level
+                                        forParagraphRange:substringRange
+                                                   inText:text];
+                        }];
   }
 
   [self applyFormatting];
@@ -865,51 +884,25 @@ using namespace facebook::react;
   _textView.typingAttributes = attrs;
 }
 
-/// Re-clips every heading block to the single paragraph at its start. Headings
-/// never span more than one paragraph; after a newline splits a heading the
-/// stored range may cover two paragraphs, so we reset it to the first one
-/// (turning the spilled-over line into a plain paragraph).
-- (void)clipHeadingBlocksToFirstParagraph
+/// Reverts to a plain paragraph any heading no longer anchored at a line start.
+/// A heading must begin at its line's first character; a line merge (e.g.
+/// Backspace at a heading line's start joining it onto the previous line) or a
+/// deleted line lands its range or empty-line anchor mid-line. The whole merged
+/// line reverts to a plain paragraph (mirrors Android's
+/// pruneOrphanedHeadingAnchors). Runs BEFORE normalizeToLineBoundsInText: so a
+/// merged range is judged on its unsnapped anchor and can't first grow over the
+/// line it merged into.
+- (void)pruneOrphanedHeadingBlocks
 {
-  NSString *text = ENRMGetPlainText(_textView);
+  NSString *text = _textView.textStorage.string;
   for (ENRMBlockRange *block in _blockStore.allRanges) {
     if (ENRMHeadingLevelForBlockType(block.type) == 0) {
       continue;
     }
-    // Keep zero-length headings (empty-line anchors) untouched here; their
-    // validity is reconciled by dropStaleEmptyHeadings.
-    if (block.range.length == 0) {
-      continue;
-    }
-    NSRange firstParagraph = [text paragraphRangeForRange:NSMakeRange(block.range.location, 0)];
-    if (!NSEqualRanges(firstParagraph, block.range)) {
-      [_blockStore setBlockType:block.type level:block.level forParagraphRange:firstParagraph inText:text];
-    }
-  }
-}
-
-/// Removes zero-length heading anchors that no longer sit at the start of an
-/// empty line. An emptied heading line keeps a zero-length block (so the line
-/// stays a heading), but once that line is merged away — e.g. Backspace at its
-/// start joining the previous line — the anchor lands inside a non-empty
-/// paragraph and must be dropped so the merged line is a plain paragraph.
-- (void)dropStaleEmptyHeadings
-{
-  NSString *text = _textView.textStorage.string;
-  for (ENRMBlockRange *block in _blockStore.allRanges) {
-    if (ENRMHeadingLevelForBlockType(block.type) == 0 || block.range.length > 0) {
-      continue;
-    }
-    NSUInteger anchor = block.range.location;
-    BOOL valid = NO;
-    if (anchor <= text.length) {
-      NSRange paragraph = [text paragraphRangeForRange:NSMakeRange(anchor, 0)];
-      // Valid only when the anchor is the start of a line with no glyph content
-      // (an empty paragraph), i.e. the heading line is still present but empty.
-      valid = paragraph.location == anchor && paragraph.length == 0;
-    }
-    if (!valid) {
-      [_blockStore removeBlock:block];
+    NSUInteger anchor = MIN(block.range.location, text.length);
+    BOOL atLineStart = [text paragraphRangeForRange:NSMakeRange(anchor, 0)].location == anchor;
+    if (!atLineStart) {
+      [_blockStore removeBlockInParagraphRange:NSMakeRange(anchor, 0) inText:text];
     }
   }
 }
@@ -1020,8 +1013,6 @@ using namespace facebook::react;
                      ranges:(NSArray<ENRMFormattingRange *> *)ranges
                 blockRanges:(NSArray<ENRMBlockRange *> *)blockRanges
 {
-  // The provider runs synchronously inside the serializer call, so capturing
-  // the formatter directly is safe — no escaping closure, no retain cycle.
   ENRMInputFormatter *formatter = _formatter;
   return [ENRMMarkdownSerializer serializePlainText:text
                                              ranges:ranges
@@ -1595,20 +1586,18 @@ using namespace facebook::react;
 
   [_formattingStore adjustForEditAtLocation:editLocation deletedLength:deletedLength insertedLength:insertedLength];
   [_blockStore adjustForEditAtLocation:editLocation deletedLength:deletedLength insertedLength:insertedLength];
-
-  // An emptied heading line keeps a zero-length anchor (so it stays a heading);
-  // drop any such anchor whose line was merged/removed by this edit.
-  [self dropStaleEmptyHeadings];
+  // Order matters: drop headings orphaned by a line merge (judged on the
+  // still-unsnapped range) BEFORE re-snapping to line bounds, so a merged range
+  // doesn't first grow over the line it merged into and escape the prune.
+  // Normalization then re-absorbs edge-typed characters, clips a newline split
+  // to the first line (headings are single-paragraph, so Enter inside one
+  // leaves the spilled-over text a plain paragraph), and keeps empty-line
+  // heading anchors.
+  [self pruneOrphanedHeadingBlocks];
+  [_blockStore normalizeToLineBoundsInText:ENRMGetPlainText(_textView)];
 
   if (insertedLength > 0) {
     NSRange insertedRange = NSMakeRange(editLocation, insertedLength);
-
-    // Headings are single-paragraph: a newline inserted into a heading (e.g.
-    // Enter at its end) splits it into two paragraphs, but the block-store edit
-    // adjustment grows the existing range to cover the insertion. Clip heading
-    // blocks back to their first paragraph so the new line starts as a plain
-    // paragraph. Lists (multi-paragraph blocks) are not clipped.
-    [self clipHeadingBlocksToFirstParagraph];
 
     // Skip applying pending styles when the insertion is only line breaks —
     // a phantom range over a bare newline corrupts isStyleActive() at the boundary.

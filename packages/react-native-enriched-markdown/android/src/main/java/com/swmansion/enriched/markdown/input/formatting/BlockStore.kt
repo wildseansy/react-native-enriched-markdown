@@ -15,6 +15,12 @@ class BlockStore {
 
   val allRanges: List<BlockRange> get() = Collections.unmodifiableList(ranges)
 
+  /**
+   * Incoming ranges are trusted to be non-overlapping and line-scoped — the
+   * parser owns that invariant (md4c block structure never overlaps at the same
+   * nesting level, and nested containers are not yet mapped). Revisit
+   * enforcement here if a container block type (list, blockquote) is added.
+   */
   fun setRanges(newRanges: List<BlockRange>) {
     ranges.clear()
     ranges.addAll(newRanges.sortedBy { it.start })
@@ -62,31 +68,22 @@ class BlockStore {
   }
 
   /**
-   * Re-snaps every heading range to its line bounds `[lineStart, lineEnd)` (lineEnd
-   * excluding the trailing newline). A heading is a single-paragraph block that spans
-   * its whole line, so after a text edit this grows the block over text typed into the
-   * line and shrinks it as text is removed — including collapsing to a zero-length
-   * anchor on an emptied line (kept so the line stays a heading). A newline ends the
-   * line, so a heading never bleeds onto the next paragraph. Other block types are
-   * left untouched.
-   */
-  fun normalizeHeadingRangesToLines(text: CharSequence) {
-    for (range in ranges) {
-      if (range.type !in BlockType.HEADINGS) continue
-      val anchor = range.start.coerceIn(0, text.length)
-      var lineStart = anchor
-      while (lineStart > 0 && text[lineStart - 1] != '\n') lineStart--
-      var lineEnd = lineStart
-      while (lineEnd < text.length && text[lineEnd] != '\n') lineEnd++
-      range.start = lineStart
-      range.end = lineEnd
-    }
-    ranges.sortBy { it.start }
-  }
-
-  /**
-   * Shifts/clips block ranges to follow a text edit, using the same overlap
-   * classification shape as [FormattingStore.adjustForEdit].
+   * Shifts/clips block ranges to follow a text edit. Delegates the shift/clip
+   * classification to [RangeEditAdjustment] but layers heading persistence on
+   * top: the shared adjustment removes zero-length ranges, while an emptied
+   * heading line persists as a zero-length anchor (so the line stays a heading).
+   *
+   * - Existing anchors are handled around the delegation: one exactly at the
+   *   edit location stays put (the edit lands on its line and
+   *   [normalizeToLineBounds] grows it over the typed text), ones past the edit
+   *   shift with it, and one whose position was deleted goes with its line.
+   * - A heading whose text is deleted exactly to its end (the deletion did not
+   *   consume the line's newline, so the line itself survives) collapses to an
+   *   anchor at the edit location instead of disappearing. A deletion running
+   *   past the heading's end removed the line, so the heading is dropped.
+   *
+   * The view's prune/normalize pass reconciles the surviving anchors against
+   * the final text.
    */
   fun adjustForEdit(
     editLocation: Int,
@@ -96,79 +93,74 @@ class BlockStore {
     if (deletedLength == 0 && insertedLength == 0) return
 
     val deleteEnd = editLocation + deletedLength
-    val indexesToRemove = mutableListOf<Int>()
+    val delta = insertedLength - deletedLength
 
-    for ((idx, range) in ranges.withIndex()) {
-      if (deletedLength > 0) {
-        when (classifyOverlap(range.start, range.end, editLocation, deleteEnd)) {
-          EditOverlap.BEFORE_EDIT -> { /* no change */ }
+    val anchors = ranges.filter { it.length == 0 && it.type in BlockType.HEADINGS }
+    ranges.removeAll { it.length == 0 }
 
-          EditOverlap.AFTER_EDIT -> {
-            range.start = range.start - deletedLength + insertedLength
-            range.end = range.end - deletedLength + insertedLength
-          }
+    // At most one range can end exactly at deleteEnd, so this restores at most
+    // one collapsed heading.
+    val collapsed =
+      ranges.firstOrNull {
+        it.type in BlockType.HEADINGS && it.start >= editLocation && it.end == deleteEnd
+      }
 
-          EditOverlap.FULLY_DELETED -> {
-            // A heading whose text is fully deleted persists as a zero-length block
-            // anchored at the (now empty) line start, so the line stays a heading
-            // until the user toggles it off or the line is merged/removed (those
-            // text-aware decisions live in the view). Other blocks are dropped.
-            if (range.type in BlockType.HEADINGS) {
-              range.start = editLocation
-              range.end = editLocation
-            } else {
-              indexesToRemove.add(idx)
-            }
-          }
+    RangeEditAdjustment.adjustForEdit(ranges, editLocation, deletedLength, insertedLength)
 
-          EditOverlap.DELETED_INSIDE -> {
-            range.end = range.end - deletedLength + insertedLength
-          }
+    for (anchor in anchors) {
+      when {
+        anchor.start <= editLocation -> { /* keeps its position */ }
 
-          EditOverlap.CLIPPED_END -> {
-            val newEnd = editLocation + insertedLength
-            val newLength = if (newEnd > range.start) newEnd - range.start else 0
-            range.end = range.start + newLength
-            if (newLength == 0 && range.type !in BlockType.HEADINGS) indexesToRemove.add(idx)
-          }
-
-          EditOverlap.CLIPPED_START -> {
-            val charsClipped = deleteEnd - range.start
-            val newStart = editLocation + insertedLength
-            val oldLength = range.length
-            range.start = newStart
-            range.end = newStart + oldLength - charsClipped
-            if (range.length == 0 && range.type !in BlockType.HEADINGS) indexesToRemove.add(idx)
-          }
+        anchor.start >= deleteEnd -> {
+          anchor.start += delta
+          anchor.end = anchor.start
         }
-      } else {
-        when {
-          // A zero-length heading anchor (an emptied heading line) stays put on insert;
-          // the view re-normalizes heading ranges to their line bounds afterwards, which
-          // grows the block over text typed back into the line.
-          range.length == 0 && range.type in BlockType.HEADINGS && range.start == editLocation -> {
-            // anchor stays at editLocation; end is grown by the view's normalization
-          }
 
-          range.start >= editLocation -> {
-            range.start += insertedLength
-            range.end += insertedLength
-          }
-
-          editLocation < range.end -> {
-            range.end += insertedLength
-          }
+        else -> {
+          continue // the anchor's line was deleted
         }
       }
+      ranges.add(sortedInsertionIndex(anchor.start), anchor)
     }
 
-    for (idx in indexesToRemove.reversed()) {
-      ranges.removeAt(idx)
+    if (collapsed != null) {
+      ranges.add(
+        sortedInsertionIndex(editLocation),
+        BlockRange(collapsed.type, editLocation, editLocation, collapsed.level),
+      )
     }
+  }
 
-    // Keep zero-length heading anchors (an emptied heading line that should stay a
-    // heading); drop every other collapsed range.
-    ranges.removeAll { it.length == 0 && it.type !in BlockType.HEADINGS }
+  /**
+   * Re-normalizes every stored range back to the whole-line bounds of the line
+   * containing its start. Call after [adjustForEdit] once [text] is final:
+   * [adjustForEdit] deliberately leaves characters inserted at a range's start
+   * or end outside the range (matching [FormattingStore]'s convention), and a
+   * newline typed inside a range leaves it spanning two lines. Re-snapping to
+   * line bounds re-absorbs edge-typed characters, clips a split range to its
+   * first line (the text after the caret becomes a plain paragraph), and drops
+   * blocks that a line-join landed on an earlier block's line (first wins).
+   * On an empty line a heading persists as a zero-length anchor (so the line
+   * stays a heading); any other collapsed range is dropped. Idempotent:
+   * ranges already line-scoped are untouched.
+   */
+  fun normalizeToLineBounds(text: CharSequence) {
+    if (ranges.isEmpty()) return
+
+    var previousEnd = -1
+    val iterator = ranges.listIterator()
+    while (iterator.hasNext()) {
+      val range = iterator.next()
+      val (lineStart, lineEnd) = paragraphBounds(range.start, range.start, text)
+      val isEmptyLine = lineEnd == lineStart
+      if ((isEmptyLine && range.type !in BlockType.HEADINGS) || lineStart <= previousEnd) {
+        iterator.remove()
+        continue
+      }
+      range.start = lineStart
+      range.end = lineEnd
+      previousEnd = lineEnd
+    }
   }
 
   /**
@@ -212,27 +204,5 @@ class BlockStore {
       index++
     }
     return index
-  }
-
-  private enum class EditOverlap {
-    BEFORE_EDIT,
-    AFTER_EDIT,
-    FULLY_DELETED,
-    DELETED_INSIDE,
-    CLIPPED_END,
-    CLIPPED_START,
-  }
-
-  private fun classifyOverlap(
-    rangeStart: Int,
-    rangeEnd: Int,
-    editLocation: Int,
-    deleteEnd: Int,
-  ): EditOverlap {
-    if (rangeEnd <= editLocation) return EditOverlap.BEFORE_EDIT
-    if (rangeStart >= deleteEnd) return EditOverlap.AFTER_EDIT
-    if (rangeStart >= editLocation && rangeEnd <= deleteEnd) return EditOverlap.FULLY_DELETED
-    if (rangeStart < editLocation && rangeEnd > deleteEnd) return EditOverlap.DELETED_INSIDE
-    return if (rangeStart < editLocation) EditOverlap.CLIPPED_END else EditOverlap.CLIPPED_START
   }
 }

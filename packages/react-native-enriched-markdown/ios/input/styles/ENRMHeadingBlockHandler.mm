@@ -42,15 +42,4 @@
   return [hashes stringByAppendingString:@" "];
 }
 
-- (BOOL)matchesMd4cBlockType:(MD_BLOCKTYPE)md4cType detail:(void *)detail outLevel:(NSInteger *)outLevel
-{
-  if (md4cType != MD_BLOCK_H) {
-    return NO;
-  }
-  if (detail) {
-    *outLevel = (NSInteger)((MD_BLOCK_H_DETAIL *)detail)->level;
-  }
-  return YES;
-}
-
 @end

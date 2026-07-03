@@ -253,11 +253,13 @@ class EnrichedMarkdownTextInputView(
     try {
       formattingStore.adjustForEdit(editStart, deletedLength, insertedLength)
       blockStore.adjustForEdit(editStart, deletedLength, insertedLength)
-      // Order matters: drop heading anchors orphaned by a line merge (judged on the
-      // still-collapsed anchor) BEFORE re-snapping headings to their lines, so a merged
-      // anchor doesn't first grow over the line it merged into and escape the prune.
+      // Order matters: drop headings orphaned by a line merge (judged on the
+      // still-unsnapped range) BEFORE re-snapping to line bounds, so a merged
+      // range doesn't first grow over the line it merged into and escape the
+      // prune. Normalization then re-absorbs edge-typed characters, clips a
+      // newline split to the first line, and keeps empty-line heading anchors.
       pruneOrphanedHeadingAnchors()
-      text?.let { blockStore.normalizeHeadingRangesToLines(it) }
+      text?.let { blockStore.normalizeToLineBounds(it) }
       applyPendingStyles(editStart, insertedLength)
       applyFormattingScopedToEdit(editStart, insertedLength)
 
@@ -511,7 +513,17 @@ class EnrichedMarkdownTextInputView(
     if (isActive) {
       blockStore.removeBlock(selStart, selEnd, editable)
     } else {
-      blockStore.setBlock(type, level, selStart, selEnd, editable)
+      // Blocks are single-paragraph: set one range per line the selection
+      // touches, not one range spanning them all — otherwise the next edit's
+      // line normalization would clip the block to its first line.
+      var lineStart = selStart
+      while (lineStart > 0 && !editable[lineStart - 1].isLineBreak()) lineStart--
+      while (lineStart <= selEnd) {
+        var lineEnd = lineStart
+        while (lineEnd < editable.length && !editable[lineEnd].isLineBreak()) lineEnd++
+        blockStore.setBlock(type, level, lineStart, lineEnd, editable)
+        lineStart = lineEnd + 1
+      }
     }
 
     applyFormattingAndEmit()

@@ -238,21 +238,23 @@ static NSArray<ENRMFormattingRange *> *splitRangesAtParagraphBreaks(NSArray<ENRM
   NSMutableArray<NSString *> *markdownLines = [[inlineMarkdown componentsSeparatedByString:@"\n"] mutableCopy];
 
   // Inline delimiters never cross a newline, so the line partition is preserved.
-  // If this ever breaks, prefixes would land on the wrong lines — fail loudly
-  // rather than silently emitting unprefixed (or misprefixed) markdown.
+  // If this ever breaks, prefixes would land on the wrong lines. Contract on
+  // both platforms: assert in debug, log and fall back to inline-only output in
+  // release — a library must not crash the host app over lost block prefixes.
   NSCAssert(plainLines.count == markdownLines.count,
             @"Block serialization line-count invariant violated: plain=%lu markdown=%lu",
             (unsigned long)plainLines.count, (unsigned long)markdownLines.count);
   if (plainLines.count != markdownLines.count) {
+    NSLog(@"[EnrichedMarkdown] Block serialization line-count invariant violated: plain=%lu markdown=%lu",
+          (unsigned long)plainLines.count, (unsigned long)markdownLines.count);
     return inlineMarkdown;
   }
 
-  // Plain-text character offset at the start of each line.
   NSMutableArray<NSNumber *> *lineStartOffsets = [NSMutableArray arrayWithCapacity:plainLines.count];
   NSUInteger runningOffset = 0;
   for (NSString *line in plainLines) {
     [lineStartOffsets addObject:@(runningOffset)];
-    runningOffset += line.length + 1; // +1 for the '\n' separator
+    runningOffset += line.length + 1;
   }
 
   for (ENRMBlockRange *blockRange in blockRanges) {
@@ -267,8 +269,6 @@ static NSArray<ENRMFormattingRange *> *splitRangesAtParagraphBreaks(NSArray<ENRM
     for (NSUInteger lineIndex = 0; lineIndex < plainLines.count; lineIndex++) {
       NSUInteger lineStart = lineStartOffsets[lineIndex].unsignedIntegerValue;
       NSUInteger lineEnd = lineStart + plainLines[lineIndex].length;
-      // A block claims a line if their ranges intersect (block ranges are
-      // line-scoped, so this covers single- and multi-line blocks).
       if (lineEnd >= blockStart && lineStart < blockEnd) {
         markdownLines[lineIndex] = [prefix stringByAppendingString:markdownLines[lineIndex]];
       }
