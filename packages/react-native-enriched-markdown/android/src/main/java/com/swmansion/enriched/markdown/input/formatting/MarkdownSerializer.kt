@@ -1,13 +1,16 @@
 package com.swmansion.enriched.markdown.input.formatting
 
+import android.util.Log
 import com.swmansion.enriched.markdown.input.model.BlockRange
 import com.swmansion.enriched.markdown.input.model.FormattingRange
 import com.swmansion.enriched.markdown.input.model.StyleType
 
 object MarkdownSerializer {
+  private const val TAG = "MarkdownSerializer"
+
   // Zero-width space used by the editor to anchor an empty bullet line; it is an
   // internal editing aid and must never appear in serialized markdown.
-  private const val ZWSP = "\\u200B"
+  private const val ZWSP = "\u200B"
 
   /**
    * Block-aware serialization: serializes inline styles exactly as the inline-only
@@ -34,10 +37,12 @@ object MarkdownSerializer {
     val markdownLines = inlineMarkdown.split("\n").toMutableList()
 
     // Inline delimiters never cross a newline, so the line partition is preserved.
-    // If this ever breaks, prefixes would land on the wrong lines — fail loudly
-    // rather than silently emitting unprefixed (or misprefixed) markdown.
-    check(plainLines.size == markdownLines.size) {
-      "Block serialization line-count invariant violated: plain=${plainLines.size} markdown=${markdownLines.size}"
+    // If this ever breaks, prefixes would land on the wrong lines. Contract on
+    // both platforms: log and fall back to inline-only output — a library must
+    // not crash the host app over lost block prefixes.
+    if (plainLines.size != markdownLines.size) {
+      Log.e(TAG, "Block serialization line-count invariant violated: plain=${plainLines.size} markdown=${markdownLines.size}")
+      return inlineMarkdown.replace(ZWSP, "")
     }
 
     // Plain-text character offset at the start of each line.

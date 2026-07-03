@@ -246,6 +246,35 @@ export interface OnContextMenuItemPressEvent {
   selectionEnd: CodegenTypes.Int32;
 }
 
+export interface AccessibilityLabelsListProps {
+  bulletPoint: string;
+  nestedBulletPoint: string;
+  orderedItem: string;
+  nestedOrderedItem: string;
+}
+export interface AccessibilityLabelsBlockquoteProps {
+  quote: string;
+  nestedQuote: string;
+}
+export interface AccessibilityLabelsTableProps {
+  row: string;
+}
+export interface AccessibilityLabelsMathProps {
+  equation: string;
+}
+export interface AccessibilityLabelsRotorProps {
+  headings: string;
+  links: string;
+  images: string;
+}
+export interface AccessibilityLabelsProps {
+  list: Readonly<AccessibilityLabelsListProps>;
+  blockquote: Readonly<AccessibilityLabelsBlockquoteProps>;
+  table: Readonly<AccessibilityLabelsTableProps>;
+  math: Readonly<AccessibilityLabelsMathProps>;
+  rotor: Readonly<AccessibilityLabelsRotorProps>;
+}
+
 /**
  * MD4C parser flags configuration.
  * Controls how the markdown parser interprets certain syntax.
@@ -400,6 +429,7 @@ export interface NativeProps extends ViewProps {
    * Built-in items to show in the text selection context menu.
    */
   selectionMenuConfig: Readonly<SelectionMenuConfig>;
+  accessibilityLabels: Readonly<AccessibilityLabelsProps>;
   /**
    * Fired when a custom context menu item is pressed.
    * Receives the item label, the currently selected text, and the selection range.

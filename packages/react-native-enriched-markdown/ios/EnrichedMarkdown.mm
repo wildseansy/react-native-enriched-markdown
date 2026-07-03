@@ -1,5 +1,6 @@
 #import "EnrichedMarkdown.h"
 #import "ContextMenuUtils.h"
+#import "ENRMAccessibilityLabels.h"
 #import "ENRMAsyncRenderCoordinator.h"
 #import "ENRMImageAttachment.h"
 #import "ENRMMarkdownParser.h"
@@ -106,6 +107,7 @@ static char kENRMSegmentFadeAnimatorKey;
   NSArray<NSString *> *_contextMenuItemTexts;
   NSArray<NSString *> *_contextMenuItemIcons;
   ENRMSelectionMenuConfig _selectionMenuConfig;
+  ENRMAccessibilityLabels *_accessibilityLabels;
   ENRMSelectionMenuLabels _selectionMenuLabels;
 
   ENRMSpoilerOverlay _spoilerOverlay;
@@ -389,6 +391,22 @@ static char kENRMSegmentFadeAnimatorKey;
   }
 }
 
+- (void)pushAccessibilityLabelsToSegments
+{
+  for (RCTUIView *segment in _segmentViews) {
+    if ([segment isKindOfClass:[EnrichedMarkdownInternalText class]]) {
+      ((EnrichedMarkdownInternalText *)segment).accessibilityLabels = _accessibilityLabels;
+    } else if ([segment isKindOfClass:[TableContainerView class]]) {
+      ((TableContainerView *)segment).accessibilityLabels = _accessibilityLabels;
+    }
+#if ENRICHED_MARKDOWN_MATH
+    else if ([segment isKindOfClass:[ENRMMathContainerView class]]) {
+      ((ENRMMathContainerView *)segment).accessibilityLabels = _accessibilityLabels;
+    }
+#endif
+  }
+}
+
 // Table and math views cache the copy labels at creation time, so re-push them
 // on prop updates (e.g. a language change without a remount) to avoid stale
 // labels. Only the copy/copy-as-markdown labels apply to these block menus.
@@ -571,6 +589,7 @@ static char kENRMSegmentFadeAnimatorKey;
   view.allowTrailingMargin = _allowTrailingMargin;
   view.lastElementMarginBottom = segment.lastElementMarginBottom;
   view.accessibilityInfo = segment.accessibilityInfo;
+  view.accessibilityLabels = _accessibilityLabels;
   view.textView.selectable = _selectable;
   [view applyAttributedText:segment.attributedText context:segment.context];
 
@@ -621,6 +640,7 @@ static char kENRMSegmentFadeAnimatorKey;
   tableView.enableLinkPreview = _enableLinkPreview;
   tableView.writingDirectionMode = _writingDirectionMode;
   tableView.resolvedLayoutDirection = _resolvedLayoutDirection;
+  tableView.accessibilityLabels = _accessibilityLabels;
   tableView.copyLabel = _selectionMenuLabels.copyLabel;
   tableView.copyAsMarkdownLabel = _selectionMenuLabels.copyAsMarkdownLabel;
 
@@ -659,6 +679,7 @@ static char kENRMSegmentFadeAnimatorKey;
 - (ENRMMathContainerView *)createMathViewForSegment:(ENRMMathSegment *)mathSegment
 {
   ENRMMathContainerView *mathView = [[ENRMMathContainerView alloc] initWithConfig:_config];
+  mathView.accessibilityLabels = _accessibilityLabels;
   mathView.copyLabel = _selectionMenuLabels.copyLabel;
   mathView.copyAsMarkdownLabel = _selectionMenuLabels.copyAsMarkdownLabel;
   [mathView applyLatex:mathSegment.latex];
@@ -818,6 +839,33 @@ static char kENRMSegmentFadeAnimatorKey;
       ENRMBuildSelectionMenuConfig(_selectionMenuLabels, newViewProps.selectionMenuConfig.copyAsMarkdown,
                                    newViewProps.selectionMenuConfig.copyImageUrl);
   [self pushSelectionMenuLabelsToSegments];
+
+  if (ENRMAccessibilityLabelsChanged(oldViewProps.accessibilityLabels, newViewProps.accessibilityLabels)) {
+    _accessibilityLabels = [[ENRMAccessibilityLabels alloc] init];
+    _accessibilityLabels.bulletPoint =
+        [[NSString alloc] initWithUTF8String:newViewProps.accessibilityLabels.list.bulletPoint.c_str()];
+    _accessibilityLabels.nestedBulletPoint =
+        [[NSString alloc] initWithUTF8String:newViewProps.accessibilityLabels.list.nestedBulletPoint.c_str()];
+    _accessibilityLabels.orderedItem =
+        [[NSString alloc] initWithUTF8String:newViewProps.accessibilityLabels.list.orderedItem.c_str()];
+    _accessibilityLabels.nestedOrderedItem =
+        [[NSString alloc] initWithUTF8String:newViewProps.accessibilityLabels.list.nestedOrderedItem.c_str()];
+    _accessibilityLabels.blockquote =
+        [[NSString alloc] initWithUTF8String:newViewProps.accessibilityLabels.blockquote.quote.c_str()];
+    _accessibilityLabels.nestedBlockquote =
+        [[NSString alloc] initWithUTF8String:newViewProps.accessibilityLabels.blockquote.nestedQuote.c_str()];
+    _accessibilityLabels.tableRow =
+        [[NSString alloc] initWithUTF8String:newViewProps.accessibilityLabels.table.row.c_str()];
+    _accessibilityLabels.mathEquation =
+        [[NSString alloc] initWithUTF8String:newViewProps.accessibilityLabels.math.equation.c_str()];
+    _accessibilityLabels.rotorHeadings =
+        [[NSString alloc] initWithUTF8String:newViewProps.accessibilityLabels.rotor.headings.c_str()];
+    _accessibilityLabels.rotorLinks =
+        [[NSString alloc] initWithUTF8String:newViewProps.accessibilityLabels.rotor.links.c_str()];
+    _accessibilityLabels.rotorImages =
+        [[NSString alloc] initWithUTF8String:newViewProps.accessibilityLabels.rotor.images.c_str()];
+    [self pushAccessibilityLabelsToSegments];
+  }
 
   if (newViewProps.spoilerOverlay != oldViewProps.spoilerOverlay) {
     NSString *modeStr = [[NSString alloc] initWithUTF8String:newViewProps.spoilerOverlay.c_str()];
@@ -1097,26 +1145,7 @@ Class<RCTComponentViewProtocol> EnrichedMarkdownCls(void)
 
 - (NSArray *)accessibilityElements
 {
-  NSMutableArray *allElements = [NSMutableArray array];
-  for (RCTUIView *segment in _segmentViews) {
-    if ([segment isKindOfClass:[EnrichedMarkdownInternalText class]]) {
-      NSArray *elements = [(EnrichedMarkdownInternalText *)segment accessibilityElements];
-      if (elements) {
-        [allElements addObjectsFromArray:elements];
-      }
-    } else if ([segment isKindOfClass:[TableContainerView class]]) {
-      NSArray *elements = [(TableContainerView *)segment accessibilityElements];
-      if (elements) {
-        [allElements addObjectsFromArray:elements];
-      }
-    }
-#if ENRICHED_MARKDOWN_MATH
-    else if ([segment isKindOfClass:[ENRMMathContainerView class]]) {
-      [allElements addObject:segment];
-    }
-#endif
-  }
-  return allElements;
+  return _segmentViews;
 }
 
 - (NSInteger)accessibilityElementCount
@@ -1141,7 +1170,8 @@ Class<RCTComponentViewProtocol> EnrichedMarkdownCls(void)
 #if !TARGET_OS_OSX
 - (NSArray<UIAccessibilityCustomRotor *> *)accessibilityCustomRotors
 {
-  return [MarkdownAccessibilityElementBuilder buildRotorsFromElements:[self accessibilityElements]];
+  return [MarkdownAccessibilityElementBuilder buildRotorsFromElements:[self accessibilityElements]
+                                                               labels:_accessibilityLabels];
 }
 #endif
 

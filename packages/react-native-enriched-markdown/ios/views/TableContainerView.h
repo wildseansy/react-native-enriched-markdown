@@ -4,6 +4,7 @@
 #import "StyleConfig.h"
 
 @class MarkdownASTNode;
+@class ENRMAccessibilityLabels;
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -29,6 +30,8 @@ typedef void (^TableLinkPressBlock)(NSString *url);
 
 @property (nonatomic, assign) ENRMWritingDirectionMode writingDirectionMode;
 @property (nonatomic, assign) NSWritingDirection resolvedLayoutDirection;
+
+@property (nonatomic, strong, nullable) ENRMAccessibilityLabels *accessibilityLabels;
 
 // Renamed getters avoid the Cocoa `copy` method family (which signals +1
 // retained returns). Property names are unchanged so call sites stay the same.

@@ -48,17 +48,4 @@
   return [indent stringByAppendingString:@"- "];
 }
 
-- (BOOL)matchesMd4cBlockType:(MD_BLOCKTYPE)md4cType detail:(void *)detail outLevel:(NSInteger *)outLevel
-{
-  // The line-level block is the list item. Nesting depth comes from how many
-  // MD_BLOCK_UL ancestors enclose it, which the parser tracks during traversal
-  // and writes into the block's level — md4c's MD_BLOCK_LI_DETAIL carries no
-  // depth — so the handler claims the item and leaves level to the parser.
-  if (md4cType != MD_BLOCK_LI) {
-    return NO;
-  }
-  *outLevel = 0;
-  return YES;
-}
-
 @end

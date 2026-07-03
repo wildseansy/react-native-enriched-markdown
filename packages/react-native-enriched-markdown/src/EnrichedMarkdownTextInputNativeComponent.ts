@@ -135,16 +135,24 @@ export interface ContextMenuItemConfig {
 
 export interface InputSelectionMenuConfigInternal {
   format: boolean;
+  formatLabel: string;
   copyAsMarkdown: boolean;
+  copyAsMarkdownLabel: string;
 }
 
 export interface FormatMenuConfigInternal {
   bold: boolean;
+  boldLabel: string;
   italic: boolean;
+  italicLabel: string;
   underline: boolean;
+  underlineLabel: string;
   strikethrough: boolean;
+  strikethroughLabel: string;
   spoiler: boolean;
+  spoilerLabel: string;
   link: boolean;
+  linkLabel: string;
 }
 
 export interface OnContextMenuItemPressEvent {
@@ -334,6 +342,7 @@ interface NativeCommands {
     indicator: string
   ) => void;
   removeLink: (viewRef: React.ElementRef<ComponentType>) => void;
+  copyToClipboard: (viewRef: React.ElementRef<ComponentType>) => void;
   requestMarkdown: (
     viewRef: React.ElementRef<ComponentType>,
     requestId: CodegenTypes.Int32
@@ -364,6 +373,7 @@ export const Commands: NativeCommands = codegenNativeCommands<NativeCommands>({
     'insertMention',
     'startMention',
     'removeLink',
+    'copyToClipboard',
     'requestMarkdown',
     'requestCaretRect',
   ],

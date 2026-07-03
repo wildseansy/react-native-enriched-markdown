@@ -2,6 +2,8 @@
 #import "ENRMUIKit.h"
 #import "StyleConfig.h"
 
+@class ENRMAccessibilityLabels;
+
 NS_ASSUME_NONNULL_BEGIN
 
 @interface ENRMMathContainerView : RCTUIView
@@ -14,6 +16,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (nonatomic, strong) StyleConfig *config;
 @property (nonatomic, copy, readonly) NSString *cachedLatex;
+@property (nonatomic, strong, nullable) ENRMAccessibilityLabels *accessibilityLabels;
 
 // Renamed getters avoid the Cocoa `copy` method family (which signals +1
 // retained returns). Property names are unchanged so call sites stay the same.

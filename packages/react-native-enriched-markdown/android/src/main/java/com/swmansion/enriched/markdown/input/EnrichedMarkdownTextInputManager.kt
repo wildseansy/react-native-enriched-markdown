@@ -284,7 +284,9 @@ class EnrichedMarkdownTextInputManager :
       } else {
         InputSelectionMenuConfig(
           format = value.getBoolean("format"),
+          formatLabel = value.getString("formatLabel") ?: "",
           copyAsMarkdown = value.getBoolean("copyAsMarkdown"),
+          copyAsMarkdownLabel = value.getString("copyAsMarkdownLabel") ?: "",
         )
       }
   }
@@ -301,11 +303,17 @@ class EnrichedMarkdownTextInputManager :
       } else {
         FormatMenuConfig(
           bold = value.getBoolean("bold"),
+          boldLabel = value.getString("boldLabel") ?: "",
           italic = value.getBoolean("italic"),
+          italicLabel = value.getString("italicLabel") ?: "",
           underline = value.getBoolean("underline"),
+          underlineLabel = value.getString("underlineLabel") ?: "",
           strikethrough = value.getBoolean("strikethrough"),
+          strikethroughLabel = value.getString("strikethroughLabel") ?: "",
           spoiler = value.getBoolean("spoiler"),
+          spoilerLabel = value.getString("spoilerLabel") ?: "",
           link = value.getBoolean("link"),
+          linkLabel = value.getString("linkLabel") ?: "",
         )
       }
   }
@@ -480,6 +488,10 @@ class EnrichedMarkdownTextInputManager :
 
   override fun removeLink(view: EnrichedMarkdownTextInputView?) {
     view?.removeLinkAtCursor()
+  }
+
+  override fun copyToClipboard(view: EnrichedMarkdownTextInputView?) {
+    view?.copyToClipboard()
   }
 
   override fun requestMarkdown(

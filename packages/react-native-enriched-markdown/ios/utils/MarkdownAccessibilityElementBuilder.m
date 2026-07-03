@@ -1,5 +1,7 @@
 #import "MarkdownAccessibilityElementBuilder.h"
 #import "AccessibilityInfo.h"
+#import "BlockquoteBorder.h"
+#import "ENRMAccessibilityLabels.h"
 #include <TargetConditionals.h>
 
 typedef NS_ENUM(NSInteger, ElementType) { ElementTypeText, ElementTypeLink, ElementTypeImage };
@@ -14,6 +16,7 @@ static const CGFloat kFocusRectPadding = 2.0;
 
 + (NSMutableArray<UIAccessibilityElement *> *)buildElementsForTextView:(UITextView *)textView
                                                                   info:(AccessibilityInfo *)info
+                                                                labels:(ENRMAccessibilityLabels *)labels
                                                              container:(id)container
 {
   NSString *fullString = textView.attributedText.string;
@@ -45,6 +48,7 @@ static const CGFloat kFocusRectPadding = 2.0;
                                                isLinked:NO
                                                 heading:level
                                                listInfo:list
+                                                 labels:labels
                                                    view:textView
                                               container:container]];
       } else {
@@ -53,6 +57,7 @@ static const CGFloat kFocusRectPadding = 2.0;
                                                              headingLevel:level
                                                                  listInfo:list
                                                                  specials:specials
+                                                                   labels:labels
                                                                inTextView:textView
                                                                 container:container]];
       }
@@ -77,6 +82,7 @@ static const CGFloat kFocusRectPadding = 2.0;
                                                         headingLevel:(NSInteger)headingLevel
                                                             listInfo:(NSDictionary *)listInfo
                                                             specials:(NSArray *)specials
+                                                              labels:(ENRMAccessibilityLabels *)labels
                                                           inTextView:(UITextView *)textView
                                                            container:(id)container
 {
@@ -100,6 +106,7 @@ static const CGFloat kFocusRectPadding = 2.0;
                                                isLinked:NO
                                                 heading:headingLevel
                                                listInfo:listInfo
+                                                 labels:labels
                                                    view:textView
                                               container:container]];
       }
@@ -113,6 +120,7 @@ static const CGFloat kFocusRectPadding = 2.0;
                                            isLinked:isImg ? [item[@"isLinked"] boolValue] : YES
                                             heading:0
                                            listInfo:listInfo
+                                             labels:labels
                                                view:textView
                                           container:container]];
     segmentStart = NSMaxRange(itemRange);
@@ -129,6 +137,7 @@ static const CGFloat kFocusRectPadding = 2.0;
                                              isLinked:NO
                                               heading:headingLevel
                                              listInfo:listInfo
+                                               labels:labels
                                                  view:textView
                                             container:container]];
     }
@@ -144,11 +153,13 @@ static const CGFloat kFocusRectPadding = 2.0;
                                          isLinked:(BOOL)linked
                                           heading:(NSInteger)level
                                          listInfo:(NSDictionary *)listInfo
+                                           labels:(ENRMAccessibilityLabels *)labels
                                              view:(UITextView *)textView
                                         container:(id)container
 {
   UIAccessibilityElement *element = [[UIAccessibilityElement alloc] initWithAccessibilityContainer:container];
-  element.accessibilityLabel = (type == ElementTypeImage && text.length == 0) ? NSLocalizedString(@"Image", @"") : text;
+  if (text.length > 0)
+    element.accessibilityLabel = text;
 
   UIBezierPath *path = [self accessibilityPathForRange:range inTextView:textView];
   if (path) {
@@ -157,41 +168,58 @@ static const CGFloat kFocusRectPadding = 2.0;
     element.accessibilityFrameInContainerSpace = [self frameForRange:range inTextView:textView container:container];
   }
 
-  NSMutableArray *values = [NSMutableArray array];
-
   if (type == ElementTypeImage) {
     element.accessibilityTraits =
         linked ? (UIAccessibilityTraitImage | UIAccessibilityTraitLink) : UIAccessibilityTraitImage;
+
   } else if (type == ElementTypeLink) {
     element.accessibilityTraits = UIAccessibilityTraitLink;
   } else if (level > 0) {
     element.accessibilityTraits = UIAccessibilityTraitHeader;
-    [values addObject:[NSString stringWithFormat:NSLocalizedString(@"heading level %ld", @""), (long)level]];
   }
 
-  if (element.accessibilityTraits & UIAccessibilityTraitLink) {
-    element.accessibilityHint = NSLocalizedString(@"Tap to open link", @"");
-  }
-
+  NSMutableArray<NSString *> *valueParts = [NSMutableArray array];
   if (listInfo && type != ElementTypeImage) {
-    [values addObject:[self formatListAnnouncement:listInfo]];
+    [valueParts addObject:[self formatListAnnouncement:listInfo labels:labels]];
   }
-
-  if (values.count > 0) {
-    element.accessibilityValue = [values componentsJoinedByString:@", "];
+  NSString *blockquoteAnnouncement = [self blockquoteAnnouncementForRange:range textView:textView labels:labels];
+  if (blockquoteAnnouncement) {
+    [valueParts addObject:blockquoteAnnouncement];
+  }
+  if (valueParts.count > 0) {
+    element.accessibilityValue = [valueParts componentsJoinedByString:@", "];
   }
 
   return element;
 }
 
++ (NSString *)blockquoteAnnouncementForRange:(NSRange)range
+                                    textView:(UITextView *)textView
+                                      labels:(ENRMAccessibilityLabels *)labels
+{
+  if (textView.attributedText.length == 0 || range.location >= textView.attributedText.length)
+    return nil;
+  NSRange effective;
+  NSNumber *depth = [textView.attributedText attribute:BlockquoteDepthAttributeName
+                                               atIndex:range.location
+                                        effectiveRange:&effective];
+  if (depth == nil)
+    return nil;
+  return depth.integerValue >= 1 ? labels.nestedBlockquote : labels.blockquote;
+}
+
 #pragma mark - Helpers
 
-+ (NSString *)formatListAnnouncement:(NSDictionary *)info
++ (NSString *)formatListAnnouncement:(NSDictionary *)info labels:(ENRMAccessibilityLabels *)labels
 {
-  NSString *prefix = [info[@"depth"] integerValue] > 1 ? @"nested " : @"";
-  return [info[@"isOrdered"] boolValue]
-             ? [NSString stringWithFormat:@"%@list item %ld", prefix, (long)[info[@"position"] integerValue]]
-             : [NSString stringWithFormat:@"%@bullet point", prefix];
+  BOOL nested = [info[@"depth"] integerValue] > 1;
+  if ([info[@"isOrdered"] boolValue]) {
+    long position = (long)[info[@"position"] integerValue];
+    NSString *template = nested ? labels.nestedOrderedItem : labels.orderedItem;
+    return [template stringByReplacingOccurrencesOfString:@"{n}"
+                                               withString:[NSString stringWithFormat:@"%ld", position]];
+  }
+  return nested ? labels.nestedBulletPoint : labels.bulletPoint;
 }
 
 + (NSRange)clampedRange:(NSRange)range forText:(NSString *)text
@@ -370,36 +398,37 @@ static const CGFloat kFocusRectPadding = 2.0;
 {
   return [self filterElements:elements withTrait:UIAccessibilityTraitImage];
 }
-+ (UIAccessibilityCustomRotor *)createHeadingRotorWithElements:(NSArray *)elements
++ (UIAccessibilityCustomRotor *)createHeadingRotorWithElements:(NSArray *)elements name:(NSString *)name
 {
-  return [self createRotorWithName:NSLocalizedString(@"Headings", @"") elements:elements];
+  return [self createRotorWithName:name elements:elements];
 }
-+ (UIAccessibilityCustomRotor *)createLinkRotorWithElements:(NSArray *)elements
++ (UIAccessibilityCustomRotor *)createLinkRotorWithElements:(NSArray *)elements name:(NSString *)name
 {
-  return [self createRotorWithName:NSLocalizedString(@"Links", @"") elements:elements];
+  return [self createRotorWithName:name elements:elements];
 }
-+ (UIAccessibilityCustomRotor *)createImageRotorWithElements:(NSArray *)elements
++ (UIAccessibilityCustomRotor *)createImageRotorWithElements:(NSArray *)elements name:(NSString *)name
 {
-  return [self createRotorWithName:NSLocalizedString(@"Images", @"") elements:elements];
+  return [self createRotorWithName:name elements:elements];
 }
 
 + (NSArray<UIAccessibilityCustomRotor *> *)buildRotorsFromElements:(NSArray<UIAccessibilityElement *> *)elements
+                                                            labels:(ENRMAccessibilityLabels *)labels
 {
   NSMutableArray<UIAccessibilityCustomRotor *> *rotors = [NSMutableArray array];
 
   NSArray<UIAccessibilityElement *> *headingElements = [self filterHeadingElements:elements];
   if (headingElements.count > 0) {
-    [rotors addObject:[self createHeadingRotorWithElements:headingElements]];
+    [rotors addObject:[self createHeadingRotorWithElements:headingElements name:labels.rotorHeadings]];
   }
 
   NSArray<UIAccessibilityElement *> *linkElements = [self filterLinkElements:elements];
   if (linkElements.count > 0) {
-    [rotors addObject:[self createLinkRotorWithElements:linkElements]];
+    [rotors addObject:[self createLinkRotorWithElements:linkElements name:labels.rotorLinks]];
   }
 
   NSArray<UIAccessibilityElement *> *imageElements = [self filterImageElements:elements];
   if (imageElements.count > 0) {
-    [rotors addObject:[self createImageRotorWithElements:imageElements]];
+    [rotors addObject:[self createImageRotorWithElements:imageElements name:labels.rotorImages]];
   }
 
   return rotors;
@@ -412,7 +441,10 @@ static const CGFloat kFocusRectPadding = 2.0;
 // attributes, and exposing them via NSAccessibilityElement so VoiceOver can navigate the
 // rendered markdown content. The iOS implementation above can serve as a reference.
 
-+ (NSMutableArray *)buildElementsForTextView:(id)textView info:(AccessibilityInfo *)info container:(id)container
++ (NSMutableArray *)buildElementsForTextView:(id)textView
+                                        info:(AccessibilityInfo *)info
+                                      labels:(ENRMAccessibilityLabels *)labels
+                                   container:(id)container
 {
   return [NSMutableArray array];
 }
@@ -428,19 +460,19 @@ static const CGFloat kFocusRectPadding = 2.0;
 {
   return @[];
 }
-+ (id)createHeadingRotorWithElements:(NSArray *)elements
++ (id)createHeadingRotorWithElements:(NSArray *)elements name:(NSString *)name
 {
   return nil;
 }
-+ (id)createLinkRotorWithElements:(NSArray *)elements
++ (id)createLinkRotorWithElements:(NSArray *)elements name:(NSString *)name
 {
   return nil;
 }
-+ (id)createImageRotorWithElements:(NSArray *)elements
++ (id)createImageRotorWithElements:(NSArray *)elements name:(NSString *)name
 {
   return nil;
 }
-+ (NSArray *)buildRotorsFromElements:(NSArray *)elements
++ (NSArray *)buildRotorsFromElements:(NSArray *)elements labels:(ENRMAccessibilityLabels *)labels
 {
   return @[];
 }

@@ -10,6 +10,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
 import androidx.customview.widget.ExploreByTouchHelper
 import com.swmansion.enriched.markdown.spans.BaseListSpan
+import com.swmansion.enriched.markdown.spans.BlockquoteSpan
 import com.swmansion.enriched.markdown.spans.HeadingSpan
 import com.swmansion.enriched.markdown.spans.ImageSpan
 import com.swmansion.enriched.markdown.spans.LinkSpan
@@ -22,6 +23,13 @@ class MarkdownAccessibilityHelper(
   private var needsRebuild = false
   private var lastLayoutHashCode = 0
   private var pendingLayoutListener: ViewTreeObserver.OnGlobalLayoutListener? = null
+
+  var labels: AccessibilityLabels = AccessibilityLabels()
+    set(value) {
+      if (field == value) return
+      field = value
+      invalidateAccessibilityItems()
+    }
 
   data class AccessibilityItem(
     val id: Int,
@@ -184,7 +192,7 @@ class MarkdownAccessibilityHelper(
       }
 
       // The semantic span itself
-      val content = span.imageAltText?.ifEmpty { "Image" } ?: spanned.substring(span.start, span.end).trim()
+      val content = span.imageAltText ?: spanned.substring(span.start, span.end).trim()
       if (content.isNotEmpty()) {
         items.add(createSpanItem(nextId++, content, span, spanned))
       }
@@ -322,32 +330,61 @@ class MarkdownAccessibilityHelper(
       )
     }
 
+    val blockquoteAnnouncement = blockquoteAnnouncementFor(item)
     when {
       item.isHeading -> {
         isHeading = true
-        contentDescription = "${item.text}, heading level ${item.headingLevel}"
+        if (blockquoteAnnouncement != null) {
+          roleDescription = blockquoteAnnouncement
+        }
       }
 
       item.isImage -> {
-        roleDescription = "image"
+        roleDescription = appendBlockquote("image", blockquoteAnnouncement)
       }
 
       item.isLink -> {
         isClickable = true
         addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_CLICK)
-        roleDescription = item.listInfo?.let { "link, ${it.listAnnouncement}" } ?: "link"
+        val base = item.listInfo?.let { "link, ${it.listAnnouncement}" } ?: "link"
+        roleDescription = appendBlockquote(base, blockquoteAnnouncement)
       }
 
       item.isListItem -> {
-        roleDescription = item.listInfo!!.listAnnouncement
+        roleDescription = appendBlockquote(item.listInfo!!.listAnnouncement, blockquoteAnnouncement)
+      }
+
+      blockquoteAnnouncement != null -> {
+        roleDescription = blockquoteAnnouncement
       }
     }
   }
 
+  private fun appendBlockquote(
+    base: String,
+    blockquoteAnnouncement: String?,
+  ): String = if (blockquoteAnnouncement != null) "$base, $blockquoteAnnouncement" else base
+
+  private fun blockquoteAnnouncementFor(item: AccessibilityItem): String? {
+    val spanned = textView.text as? Spanned ?: return null
+    if (spanned.isEmpty()) return null
+    val pos = item.start.coerceIn(0, spanned.length - 1).coerceAtLeast(0)
+    if (pos >= spanned.length) return null
+    val spans = spanned.getSpans(pos, pos + 1, BlockquoteSpan::class.java)
+    if (spans.isEmpty()) return null
+    val maxDepth = spans.maxOf { it.depth }
+    return if (maxDepth >= 1) labels.nestedBlockquote else labels.blockquote
+  }
+
   private val ListItemInfo.listAnnouncement: String
     get() {
-      val prefix = if (depth > 0) "nested " else ""
-      return if (isOrdered) "${prefix}list item $itemNumber" else "${prefix}bullet point"
+      val nested = depth > 0
+      return if (isOrdered) {
+        val template = if (nested) labels.nestedOrderedItem else labels.orderedItem
+        template.replace("{n}", itemNumber.toString())
+      } else {
+        if (nested) labels.nestedBulletPoint else labels.bulletPoint
+      }
     }
 
   private fun boundsForItem(item: AccessibilityItem): Rect {

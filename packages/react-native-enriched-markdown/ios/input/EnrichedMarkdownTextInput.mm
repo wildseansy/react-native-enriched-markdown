@@ -21,6 +21,7 @@
 #import "EnrichedMarkdownTextInput+Internal.h"
 #import "InputStylePropsUtils.h"
 #import "ParagraphStyleUtils.h"
+#import "PasteboardUtils.h"
 #import "SelectionColorUtils.h"
 #import <QuartzCore/CABase.h>
 #import <React/RCTI18nUtil.h>
@@ -108,6 +109,17 @@ using namespace facebook::react;
 
   ENRMInputSelectionMenuConfig _inputSelectionMenuConfig;
   ENRMFormatMenuConfig _formatMenuConfig;
+
+  // Strong owners for the strings the two config structs above reference via
+  // `__unsafe_unretained` pointers.
+  NSString *_inputSelectionMenuFormatLabel;
+  NSString *_inputSelectionMenuCopyAsMarkdownLabel;
+  NSString *_formatMenuBoldLabel;
+  NSString *_formatMenuItalicLabel;
+  NSString *_formatMenuUnderlineLabel;
+  NSString *_formatMenuStrikethroughLabel;
+  NSString *_formatMenuSpoilerLabel;
+  NSString *_formatMenuLinkLabel;
 }
 
 #pragma mark - Fabric lifecycle
@@ -373,18 +385,42 @@ using namespace facebook::react;
     _contextMenuItemIcons = ENRMContextMenuIconsFromItems(newViewProps.contextMenuItems);
   }
 
+  // Coalesce against `initWithUTF8String:` returning nil on malformed UTF-8 —
+  // UIMenu / UIAction / NSMenuItem titles are _Nonnull and would crash.
+  _inputSelectionMenuFormatLabel =
+      [[NSString alloc] initWithUTF8String:newViewProps.selectionMenuConfig.formatLabel.c_str()] ?: @"";
+  _inputSelectionMenuCopyAsMarkdownLabel =
+      [[NSString alloc] initWithUTF8String:newViewProps.selectionMenuConfig.copyAsMarkdownLabel.c_str()] ?: @"";
   _inputSelectionMenuConfig = (ENRMInputSelectionMenuConfig){
       .format = newViewProps.selectionMenuConfig.format,
+      .formatLabel = _inputSelectionMenuFormatLabel,
       .copyAsMarkdown = newViewProps.selectionMenuConfig.copyAsMarkdown,
+      .copyAsMarkdownLabel = _inputSelectionMenuCopyAsMarkdownLabel,
   };
 
+  _formatMenuBoldLabel = [[NSString alloc] initWithUTF8String:newViewProps.formatMenuConfig.boldLabel.c_str()] ?: @"";
+  _formatMenuItalicLabel =
+      [[NSString alloc] initWithUTF8String:newViewProps.formatMenuConfig.italicLabel.c_str()] ?: @"";
+  _formatMenuUnderlineLabel =
+      [[NSString alloc] initWithUTF8String:newViewProps.formatMenuConfig.underlineLabel.c_str()] ?: @"";
+  _formatMenuStrikethroughLabel =
+      [[NSString alloc] initWithUTF8String:newViewProps.formatMenuConfig.strikethroughLabel.c_str()] ?: @"";
+  _formatMenuSpoilerLabel =
+      [[NSString alloc] initWithUTF8String:newViewProps.formatMenuConfig.spoilerLabel.c_str()] ?: @"";
+  _formatMenuLinkLabel = [[NSString alloc] initWithUTF8String:newViewProps.formatMenuConfig.linkLabel.c_str()] ?: @"";
   _formatMenuConfig = (ENRMFormatMenuConfig){
       .bold = newViewProps.formatMenuConfig.bold,
+      .boldLabel = _formatMenuBoldLabel,
       .italic = newViewProps.formatMenuConfig.italic,
+      .italicLabel = _formatMenuItalicLabel,
       .underline = newViewProps.formatMenuConfig.underline,
+      .underlineLabel = _formatMenuUnderlineLabel,
       .strikethrough = newViewProps.formatMenuConfig.strikethrough,
+      .strikethroughLabel = _formatMenuStrikethroughLabel,
       .spoiler = newViewProps.formatMenuConfig.spoiler,
+      .spoilerLabel = _formatMenuSpoilerLabel,
       .link = newViewProps.formatMenuConfig.link,
+      .linkLabel = _formatMenuLinkLabel,
   };
 
   if (newViewProps.mentionIndicators != oldViewProps.mentionIndicators) {
@@ -583,7 +619,13 @@ using namespace facebook::react;
 
   [_formattingStore adjustForEditAtLocation:editLocation deletedLength:selection.length insertedLength:text.length];
   [_blockStore adjustForEditAtLocation:editLocation deletedLength:selection.length insertedLength:text.length];
-  [self dropStaleEmptyBlockAnchors];
+  // Order matters: drop blocks orphaned by a line merge (judged on the
+  // still-unsnapped range) BEFORE re-snapping to line bounds, so a merged range
+  // doesn't first grow over the line it merged into and escape the prune.
+  // Normalization then re-absorbs edge-typed characters, clips a newline split
+  // to the first line, and keeps empty-line anchors of persisting blocks.
+  [self pruneOrphanedBlockAnchors];
+  [_blockStore normalizeToLineBoundsInText:ENRMGetPlainText(_textView)];
 
   for (ENRMFormattingRange *range in ranges) {
     NSRange shifted = NSMakeRange(range.range.location + editLocation, range.range.length);
@@ -1237,48 +1279,25 @@ using namespace facebook::react;
 /// never span more than one paragraph; after a newline splits a heading the
 /// stored range may cover two paragraphs, so we reset it to the first one
 /// (turning the spilled-over line into a plain paragraph).
-- (void)clipHeadingBlocksToFirstParagraph
-{
-  NSString *text = ENRMGetPlainText(_textView);
-  for (ENRMBlockRange *block in _blockStore.allRanges) {
-    if (ENRMHeadingLevelForBlockType(block.type) == 0) {
-      continue;
-    }
-    // Keep zero-length headings (empty-line anchors) untouched here; their
-    // validity is reconciled by dropStaleEmptyBlockAnchors.
-    if (block.range.length == 0) {
-      continue;
-    }
-    NSRange firstParagraph = [text paragraphRangeForRange:NSMakeRange(block.range.location, 0)];
-    if (!NSEqualRanges(firstParagraph, block.range)) {
-      [_blockStore setBlockType:block.type level:block.level forParagraphRange:firstParagraph inText:text];
-    }
-  }
-}
-
-/// Removes zero-length block anchors (headings and bullet items) that no longer
-/// sit at the start of an empty line. An emptied heading/bullet line keeps a
-/// zero-length block (so the line stays that block), but once that line is merged
-/// away — e.g. Backspace at its start joining the previous line — the anchor
-/// lands inside a non-empty paragraph and must be dropped so the merged line is a
-/// plain paragraph.
-- (void)dropStaleEmptyBlockAnchors
+/// Reverts to a plain paragraph any anchored block (heading, bullet item) no
+/// longer anchored at a line start. A block must begin at its line's first
+/// character; a line merge (e.g. Backspace at a block line's start joining it
+/// onto the previous line) or a deleted line lands its range or empty-line
+/// anchor mid-line. The whole merged line reverts to a plain paragraph
+/// (mirrors Android's pruneOrphanedAnchors). Runs BEFORE
+/// normalizeToLineBoundsInText: so a merged range is judged on its unsnapped
+/// anchor and can't first grow over the line it merged into.
+- (void)pruneOrphanedBlockAnchors
 {
   NSString *text = _textView.textStorage.string;
   for (ENRMBlockRange *block in _blockStore.allRanges) {
-    if (!ENRMBlockTypePersistsWhenEmpty(block.type) || block.range.length > 0) {
+    if (!ENRMBlockTypePersistsWhenEmpty(block.type)) {
       continue;
     }
-    NSUInteger anchor = block.range.location;
-    BOOL valid = NO;
-    if (anchor <= text.length) {
-      NSRange paragraph = [text paragraphRangeForRange:NSMakeRange(anchor, 0)];
-      // Valid only when the anchor is the start of a line with no glyph content
-      // (an empty paragraph), i.e. the heading line is still present but empty.
-      valid = paragraph.location == anchor && paragraph.length == 0;
-    }
-    if (!valid) {
-      [_blockStore removeBlock:block];
+    NSUInteger anchor = MIN(block.range.location, text.length);
+    BOOL atLineStart = [text paragraphRangeForRange:NSMakeRange(anchor, 0)].location == anchor;
+    if (!atLineStart) {
+      [_blockStore removeBlockInParagraphRange:NSMakeRange(anchor, 0) inText:text];
     }
   }
 }
@@ -1445,6 +1464,21 @@ using namespace facebook::react;
   }
 
   return [self serializeText:selectedText ranges:clippedRanges blockRanges:clippedBlockRanges];
+}
+
+- (void)copyToClipboard
+{
+  NSString *plainText = ENRMGetPlainText(_textView);
+  if (plainText.length == 0) {
+    return;
+  }
+  NSString *markdown = [ENRMMarkdownSerializer serializePlainText:plainText ranges:[self allRangesIncludingTransient]];
+  NSMutableDictionary *items = [NSMutableDictionary dictionary];
+  items[kUTIPlainText] = plainText;
+  if (markdown.length > 0) {
+    items[kENRMMarkdownPasteboardType] = markdown;
+  }
+  copyItemsToPasteboard(items);
 }
 
 - (void)requestMarkdown:(NSInteger)requestId
@@ -1971,20 +2005,16 @@ using namespace facebook::react;
 
   [_formattingStore adjustForEditAtLocation:editLocation deletedLength:deletedLength insertedLength:insertedLength];
   [_blockStore adjustForEditAtLocation:editLocation deletedLength:deletedLength insertedLength:insertedLength];
-
-  // An emptied heading line keeps a zero-length anchor (so it stays a heading);
-  // drop any such anchor whose line was merged/removed by this edit.
-  [self dropStaleEmptyBlockAnchors];
+  // Order matters: drop blocks orphaned by a line merge (judged on the
+  // still-unsnapped range) BEFORE re-snapping to line bounds, so a merged range
+  // doesn't first grow over the line it merged into and escape the prune.
+  // Normalization then re-absorbs edge-typed characters, clips a newline split
+  // to the first line, and keeps empty-line anchors of persisting blocks.
+  [self pruneOrphanedBlockAnchors];
+  [_blockStore normalizeToLineBoundsInText:ENRMGetPlainText(_textView)];
 
   if (insertedLength > 0) {
     NSRange insertedRange = NSMakeRange(editLocation, insertedLength);
-
-    // Headings are single-paragraph: a newline inserted into a heading (e.g.
-    // Enter at its end) splits it into two paragraphs, but the block-store edit
-    // adjustment grows the existing range to cover the insertion. Clip heading
-    // blocks back to their first paragraph so the new line starts as a plain
-    // paragraph. Lists (multi-paragraph blocks) are not clipped.
-    [self clipHeadingBlocksToFirstParagraph];
 
     // Skip applying pending styles when the insertion is only line breaks —
     // a phantom range over a bare newline corrupts isStyleActive() at the boundary.

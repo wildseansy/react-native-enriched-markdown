@@ -4,7 +4,6 @@ import com.swmansion.enriched.markdown.input.model.BlockRange
 import com.swmansion.enriched.markdown.input.model.BlockType
 import com.swmansion.enriched.markdown.input.model.InputFormatterStyle
 import com.swmansion.enriched.markdown.input.spans.InputHeadingSpan
-import com.swmansion.enriched.markdown.parser.MarkdownASTNode
 
 /**
  * Block handler for ATX headings (H1-H6). A single instance serves all six levels:
@@ -25,14 +24,4 @@ class HeadingBlockHandler : BlockHandler {
   override fun spanClasses(): List<Class<*>> = listOf(InputHeadingSpan::class.java)
 
   override fun markdownLinePrefix(blockRange: BlockRange): String = "#".repeat(blockRange.level.coerceIn(1, 6)) + " "
-
-  override fun matchesNodeType(
-    nodeType: MarkdownASTNode.NodeType,
-    node: MarkdownASTNode,
-    outLevel: IntArray,
-  ): Boolean {
-    if (nodeType != MarkdownASTNode.NodeType.Heading) return false
-    outLevel[0] = node.getAttribute("level")?.toIntOrNull() ?: 1
-    return true
-  }
 }

@@ -197,19 +197,6 @@
   return _blockHandlers[@(type)];
 }
 
-- (NSArray<id<ENRMBlockHandler>> *)allBlockHandlers
-{
-  // One handler may be registered under several block-type keys (the heading
-  // handler covers all six levels), so dedupe to distinct instances.
-  NSMutableArray<id<ENRMBlockHandler>> *distinct = [NSMutableArray array];
-  for (id<ENRMBlockHandler> handler in _blockHandlers.allValues) {
-    if (![distinct containsObject:handler]) {
-      [distinct addObject:handler];
-    }
-  }
-  return distinct;
-}
-
 - (void)applyFormattingRanges:(NSArray<ENRMFormattingRange *> *)ranges
                    toTextView:(ENRMPlatformTextView *)textView
                         style:(ENRMInputFormatterStyle *)style
@@ -295,7 +282,7 @@
               toTextView:(ENRMPlatformTextView *)textView
                    style:(ENRMInputFormatterStyle *)style
 {
-  if (blockRanges.count == 0) {
+  if (_blockHandlers.count == 0) {
     return;
   }
 
@@ -307,13 +294,27 @@
 
   [textStorage beginEditing];
 
-  // The block-type/level attributes are a read surface for the layout manager
-  // (it draws list markers by scanning runs), not a source of truth — the block
-  // store is. Clear them across the whole text first so a line that lost its
-  // block (toggled off) stops drawing a marker, then re-stamp below.
-  NSRange fullTextRange = NSMakeRange(0, textLength);
-  [textStorage removeAttribute:ENRMBlockTypeAttributeName range:fullTextRange];
-  [textStorage removeAttribute:ENRMBlockLevelAttributeName range:fullTextRange];
+  // Reset pass: strip everything the previous block pass applied — paragraphs
+  // are found via the ENRMBlockTypeAttributeName marker — so a removed or moved
+  // block doesn't leave stale paragraph styling behind. Character-level
+  // attributes (fonts, colors) are already reset by the inline pass, which runs
+  // first. This runs even with zero current ranges: deleting the last block
+  // must still clear its styling.
+  NSMutableArray<NSValue *> *previouslyClaimedRanges = [NSMutableArray array];
+  [textStorage enumerateAttribute:ENRMBlockTypeAttributeName
+                          inRange:NSMakeRange(0, textLength)
+                          options:0
+                       usingBlock:^(id value, NSRange range, BOOL *stop) {
+                         if (value != nil) {
+                           [previouslyClaimedRanges addObject:[NSValue valueWithRange:range]];
+                         }
+                       }];
+  for (NSValue *rangeValue in previouslyClaimedRanges) {
+    NSRange range = rangeValue.rangeValue;
+    [textStorage removeAttribute:ENRMBlockTypeAttributeName range:range];
+    [textStorage removeAttribute:ENRMBlockLevelAttributeName range:range];
+    [textStorage removeAttribute:NSParagraphStyleAttributeName range:range];
+  }
 
   for (ENRMBlockRange *blockRange in blockRanges) {
     if (blockRange.range.length == 0 || NSMaxRange(blockRange.range) > textLength) {
@@ -325,12 +326,23 @@
       continue;
     }
 
-    NSMutableParagraphStyle *paragraphStyle = [[NSMutableParagraphStyle alloc] init];
+    // Seed from the paragraph style at the block's location. This only matters
+    // for newly claimed paragraphs that carry a base style — for re-claimed
+    // paragraphs the reset pass above just cleared the attribute, so this reads
+    // the default. That's fine: handlers set absolute values, and
+    // applyWritingDirection re-derives direction after this pass.
+    NSParagraphStyle *existingStyle = [textStorage attribute:NSParagraphStyleAttributeName
+                                                     atIndex:blockRange.range.location
+                                              effectiveRange:NULL];
+    NSMutableParagraphStyle *paragraphStyle =
+        existingStyle ? [existingStyle mutableCopy] : [[NSMutableParagraphStyle alloc] init];
     NSMutableDictionary<NSAttributedStringKey, id> *attributes = [NSMutableDictionary dictionary];
 
     [handler applyAttributesToParagraphStyle:paragraphStyle attributes:attributes blockRange:blockRange style:style];
 
     attributes[NSParagraphStyleAttributeName] = paragraphStyle;
+    attributes[ENRMBlockTypeAttributeName] = @(blockRange.type);
+    attributes[ENRMBlockLevelAttributeName] = @(blockRange.level);
 
     // Font composition: applyFormattingRanges: (inline pass) ran first and set a
     // per-run font carrying the bold/italic traits of each character. A block
@@ -346,17 +358,7 @@
       [self mergeFontSize:blockFont overRange:blockRange.range inTextStorage:textStorage];
     }
 
-    if (attributes.count > 0) {
-      [textStorage addAttributes:attributes range:blockRange.range];
-    }
-
-    // Expose the block identity to the layout manager so it can draw the bullet
-    // marker for each list line at the right depth. Only list items need a glyph
-    // drawn; headings restyle via paragraph attributes alone.
-    if (blockRange.type == ENRMInputBlockTypeUnorderedListItem) {
-      [textStorage addAttribute:ENRMBlockTypeAttributeName value:@(blockRange.type) range:blockRange.range];
-      [textStorage addAttribute:ENRMBlockLevelAttributeName value:@(blockRange.level) range:blockRange.range];
-    }
+    [textStorage addAttributes:attributes range:blockRange.range];
   }
 
   [textStorage endEditing];

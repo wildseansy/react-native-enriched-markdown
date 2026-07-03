@@ -1,4 +1,5 @@
 #import "ENRMBlockStore.h"
+#import "ENRMRangeEditAdjustment.h"
 
 static NSUInteger sortedInsertionIndex(NSArray<ENRMBlockRange *> *ranges, NSUInteger location)
 {
@@ -17,42 +18,17 @@ static void removeIndexesInReverse(NSMutableArray *array, NSMutableIndexSet *ind
                             usingBlock:^(NSUInteger idx, BOOL *stop) { [array removeObjectAtIndex:idx]; }];
 }
 
-typedef NS_ENUM(NSInteger, EditOverlap) {
-  EditOverlapBeforeEdit,
-  EditOverlapAfterEdit,
-  EditOverlapFullyDeleted,
-  EditOverlapDeletedInside,
-  EditOverlapClippedEnd,
-  EditOverlapClippedStart,
-};
-
-static EditOverlap classifyOverlap(NSUInteger rangeStart, NSUInteger rangeEnd, NSUInteger editLocation,
-                                   NSUInteger deleteEnd)
-{
-  if (rangeEnd <= editLocation)
-    return EditOverlapBeforeEdit;
-  if (rangeStart >= deleteEnd)
-    return EditOverlapAfterEdit;
-  if (rangeStart >= editLocation && rangeEnd <= deleteEnd)
-    return EditOverlapFullyDeleted;
-  if (rangeStart < editLocation && rangeEnd > deleteEnd)
-    return EditOverlapDeletedInside;
-  if (rangeStart < editLocation && rangeEnd <= deleteEnd)
-    return EditOverlapClippedEnd;
-  return EditOverlapClippedStart;
-}
-
 /// Expands a selection to cover whole paragraphs (line-scoped block boundaries).
+/// Clamps unconditionally so out-of-bounds input can't reach
+/// paragraphRangeForRange: (which raises on an invalid range).
 static NSRange paragraphBoundsForRange(NSRange range, NSString *text)
 {
   if (text.length == 0) {
     return NSMakeRange(0, 0);
   }
-  NSRange clamped = NSIntersectionRange(range, NSMakeRange(0, text.length));
-  if (clamped.length == 0 && range.location <= text.length) {
-    clamped.location = MIN(range.location, text.length);
-  }
-  return [text paragraphRangeForRange:clamped];
+  NSUInteger location = MIN(range.location, text.length);
+  NSUInteger length = MIN(range.length, text.length - location);
+  return [text paragraphRangeForRange:NSMakeRange(location, length)];
 }
 
 @implementation ENRMBlockStore {
@@ -72,6 +48,10 @@ static NSRange paragraphBoundsForRange(NSRange range, NSString *text)
   return [_ranges copy];
 }
 
+// Incoming ranges are trusted to be non-overlapping and line-scoped — the
+// parser owns that invariant (md4c block structure never overlaps at the same
+// nesting level, and nested containers are not yet mapped). Revisit enforcement
+// here if a container block type (list, blockquote) is added.
 - (void)setRanges:(NSArray<ENRMBlockRange *> *)ranges
 {
   _ranges = [[ranges sortedArrayUsingComparator:^NSComparisonResult(ENRMBlockRange *first, ENRMBlockRange *second) {
@@ -140,29 +120,28 @@ static NSRange paragraphBoundsForRange(NSRange range, NSString *text)
   NSRange paragraphRange = paragraphBoundsForRange(range, text);
   [self removeBlocksOverlappingRange:paragraphRange];
 
-  // Determine whether the line has any glyph content. A line that is empty —
-  // whether it's the trailing line (zero-length paragraph) or an empty line
-  // mid-document (its paragraph range is just the trailing newline) — must be
-  // anchored as a ZERO-LENGTH block at the line start, not a range covering the
-  // newline. A newline-covering range mis-grows when the user types into the
-  // line (the edit shifts the block past the insertion instead of growing it),
-  // which drops the block; a zero-length anchor grows correctly.
-  NSUInteger contentLength = paragraphRange.length;
-  if (contentLength > 0) {
+  // Store content-only bounds (the parser's convention): trim the line
+  // terminator that paragraphRangeForRange includes (handles \r\n as well).
+  // An empty line — trailing line (zero-length paragraph) or mid-document
+  // (paragraph range is just the terminator) — becomes a ZERO-LENGTH anchor at
+  // the line start, never a range covering the newline: a newline-covering
+  // range mis-grows when the user types into the line (the edit shifts the
+  // block past the insertion instead of growing it), while a zero-length
+  // anchor grows correctly.
+  while (paragraphRange.length > 0) {
     unichar lastChar = [text characterAtIndex:NSMaxRange(paragraphRange) - 1];
-    if (lastChar == '\n' || lastChar == '\r') {
-      contentLength--;
+    if (lastChar != '\n' && lastChar != '\r') {
+      break;
     }
+    paragraphRange.length--;
   }
-  BOOL lineIsEmpty = contentLength == 0;
 
-  if (lineIsEmpty && !ENRMBlockTypePersistsWhenEmpty(type)) {
+  if (paragraphRange.length == 0 && !ENRMBlockTypePersistsWhenEmpty(type)) {
     // Nothing to anchor for a non-persisting type on an empty line.
     return;
   }
 
-  NSRange storedRange = lineIsEmpty ? NSMakeRange(paragraphRange.location, 0) : paragraphRange;
-  ENRMBlockRange *blockRange = [ENRMBlockRange rangeWithType:type range:storedRange level:level];
+  ENRMBlockRange *blockRange = [ENRMBlockRange rangeWithType:type range:paragraphRange level:level];
   NSUInteger insertAt = sortedInsertionIndex(_ranges, blockRange.range.location);
   [_ranges insertObject:blockRange atIndex:insertAt];
 }
@@ -171,14 +150,6 @@ static NSRange paragraphBoundsForRange(NSRange range, NSString *text)
 {
   NSRange paragraphRange = paragraphBoundsForRange(range, text);
   [self removeBlocksOverlappingRange:paragraphRange];
-}
-
-- (void)removeBlock:(ENRMBlockRange *)block
-{
-  NSUInteger idx = [_ranges indexOfObjectIdenticalTo:block];
-  if (idx != NSNotFound) {
-    [_ranges removeObjectAtIndex:idx];
-  }
 }
 
 - (void)adjustForEditAtLocation:(NSUInteger)editLocation
@@ -193,80 +164,47 @@ static NSRange paragraphBoundsForRange(NSRange range, NSString *text)
 
   for (NSUInteger idx = 0; idx < _ranges.count; idx++) {
     ENRMBlockRange *blockRange = _ranges[idx];
-    NSUInteger rangeStart = blockRange.range.location;
-    NSUInteger rangeEnd = NSMaxRange(blockRange.range);
+    BOOL persists = ENRMBlockTypePersistsWhenEmpty(blockRange.type);
 
-    if (deletedLength > 0) {
-      EditOverlap overlap = classifyOverlap(rangeStart, rangeEnd, editLocation, deleteEnd);
-
-      switch (overlap) {
-        case EditOverlapBeforeEdit:
-          break;
-
-        case EditOverlapAfterEdit:
-          blockRange.range = NSMakeRange(rangeStart - deletedLength + insertedLength, blockRange.range.length);
-          break;
-
-        case EditOverlapFullyDeleted:
-          // Persisting blocks (headings, bullet items) survive as an empty line:
-          // when all the block's text is deleted but the line itself survives,
-          // collapse the block to a zero-length anchor at the line start instead
-          // of removing it, so the emptied line stays the block. The view drops it
-          // if the line is actually gone (e.g. merged into another). Other blocks
-          // are removed as before.
-          if (ENRMBlockTypePersistsWhenEmpty(blockRange.type)) {
-            blockRange.range = NSMakeRange(editLocation + insertedLength, 0);
-          } else {
-            [indexesToRemove addIndex:idx];
-          }
-          break;
-
-        case EditOverlapDeletedInside: {
-          NSUInteger newLength = blockRange.range.length - deletedLength + insertedLength;
-          blockRange.range = NSMakeRange(rangeStart, newLength);
-          break;
-        }
-
-        case EditOverlapClippedEnd: {
-          NSUInteger newEnd = editLocation + insertedLength;
-          NSUInteger newLength = newEnd > rangeStart ? newEnd - rangeStart : 0;
-          blockRange.range = NSMakeRange(rangeStart, newLength);
-          if (newLength == 0 && !ENRMBlockTypePersistsWhenEmpty(blockRange.type)) {
-            [indexesToRemove addIndex:idx];
-          }
-          break;
-        }
-
-        case EditOverlapClippedStart: {
-          NSUInteger charsClipped = deleteEnd - rangeStart;
-          NSUInteger newStart = editLocation + insertedLength;
-          NSUInteger newLength = blockRange.range.length - charsClipped;
-          blockRange.range = NSMakeRange(newStart, newLength);
-          if (newLength == 0 && !ENRMBlockTypePersistsWhenEmpty(blockRange.type)) {
-            [indexesToRemove addIndex:idx];
-          }
-          break;
-        }
+    // Zero-length anchors (emptied heading/bullet lines) don't follow the
+    // shared adjustment's conventions: one exactly at the edit location stays
+    // put — the edit lands on its line and normalizeToLineBoundsInText: grows
+    // it over the typed text — while one past the edit shifts with it and one
+    // whose position was deleted goes with its line.
+    if (blockRange.range.length == 0) {
+      if (!persists) {
+        [indexesToRemove addIndex:idx];
+      } else if (blockRange.range.location >= deleteEnd && blockRange.range.location > editLocation) {
+        blockRange.range = NSMakeRange(blockRange.range.location - deletedLength + insertedLength, 0);
+      } else if (blockRange.range.location > editLocation) {
+        [indexesToRemove addIndex:idx]; // anchor sat inside the deleted region
       }
-    } else {
-      if (rangeStart == editLocation && blockRange.range.length == 0 &&
-          ENRMBlockTypePersistsWhenEmpty(blockRange.type)) {
-        // Typing into an empty (zero-length) persisting block: grow the anchor to
-        // cover the inserted text rather than shifting past it, so the line
-        // re-stamps as the block (heading/bullet).
-        blockRange.range = NSMakeRange(rangeStart, insertedLength);
-      } else if (rangeStart >= editLocation) {
-        blockRange.range = NSMakeRange(rangeStart + insertedLength, blockRange.range.length);
-      } else if (editLocation < rangeEnd) {
-        blockRange.range = NSMakeRange(rangeStart, blockRange.range.length + insertedLength);
-      }
+      continue;
     }
+
+    ENRMAdjustedRange adjusted = ENRMAdjustRangeForEdit(blockRange.range, editLocation, deletedLength, insertedLength);
+    if (adjusted.shouldRemove) {
+      // A persisting block (heading, bullet item) whose text is deleted exactly
+      // to its end (the deletion did not consume the line's newline, so the line
+      // itself survives) collapses to a zero-length anchor at the edit location
+      // instead of disappearing — the emptied line stays the block. A deletion
+      // running past the block's end removed the line, so the block is dropped
+      // with it. The view's prune pass reconciles the anchor against the final
+      // text.
+      if (persists && NSMaxRange(blockRange.range) == deleteEnd && blockRange.range.location >= editLocation) {
+        blockRange.range = NSMakeRange(editLocation, 0);
+      } else {
+        [indexesToRemove addIndex:idx];
+      }
+      continue;
+    }
+    blockRange.range = adjusted.range;
   }
 
   removeIndexesInReverse(_ranges, indexesToRemove);
 
   // Prune zero-length ranges, but keep zero-length persisting blocks: they anchor
-  // an emptied-but-still-present heading/bullet line (see EditOverlapFullyDeleted).
+  // an emptied-but-still-present heading/bullet line (see the collapse rule above).
   NSMutableIndexSet *emptyIndexes = [NSMutableIndexSet indexSet];
   for (NSUInteger idx = 0; idx < _ranges.count; idx++) {
     ENRMBlockRange *range = _ranges[idx];
@@ -277,6 +215,47 @@ static NSRange paragraphBoundsForRange(NSRange range, NSString *text)
   if (emptyIndexes.count > 0) {
     removeIndexesInReverse(_ranges, emptyIndexes);
   }
+}
+
+- (void)normalizeToLineBoundsInText:(NSString *)text
+{
+  if (_ranges.count == 0) {
+    return;
+  }
+
+  NSMutableIndexSet *indexesToRemove = [NSMutableIndexSet indexSet];
+  NSInteger previousEnd = -1;
+
+  for (NSUInteger idx = 0; idx < _ranges.count; idx++) {
+    ENRMBlockRange *blockRange = _ranges[idx];
+    NSRange lineRange = paragraphBoundsForRange(NSMakeRange(blockRange.range.location, 0), text);
+
+    // Block content ranges never cover the line terminator; paragraphRangeForRange
+    // includes it, so trim it (handles \r\n as well).
+    while (lineRange.length > 0) {
+      unichar last = [text characterAtIndex:NSMaxRange(lineRange) - 1];
+      if (last != '\n' && last != '\r') {
+        break;
+      }
+      lineRange.length--;
+    }
+
+    // On an empty line a persisting block (heading, bullet item) survives as a
+    // zero-length anchor (the line stays the block); any other collapsed range
+    // is dropped, as is any range that a line-join landed on an earlier block's
+    // line.
+    BOOL emptyLine = lineRange.length == 0;
+    if ((emptyLine && !ENRMBlockTypePersistsWhenEmpty(blockRange.type)) ||
+        (NSInteger)lineRange.location <= previousEnd) {
+      [indexesToRemove addIndex:idx];
+      continue;
+    }
+
+    blockRange.range = lineRange;
+    previousEnd = (NSInteger)NSMaxRange(lineRange);
+  }
+
+  removeIndexesInReverse(_ranges, indexesToRemove);
 }
 
 @end

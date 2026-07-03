@@ -4,6 +4,7 @@ import android.view.View
 import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.bridge.ReadableMap
 import com.facebook.react.uimanager.UIManagerHelper
+import com.swmansion.enriched.markdown.accessibility.AccessibilityLabels
 import com.swmansion.enriched.markdown.events.ContextMenuItemPressEvent
 import com.swmansion.enriched.markdown.events.LinkLongPressEvent
 import com.swmansion.enriched.markdown.events.LinkPressEvent
@@ -101,6 +102,28 @@ fun parseSelectionMenuConfig(value: ReadableMap?): SelectionMenuConfig {
     copyImageUrlLabel = value.getString("copyImageUrlLabel") ?: "",
     copyImageUrlsLabel = value.getString("copyImageUrlsLabel") ?: "",
     copyImageUrlPluralTemplates = parseStringList(value.getArray("copyImageUrlPluralTemplates")),
+  )
+}
+
+fun parseAccessibilityLabels(value: ReadableMap?): AccessibilityLabels {
+  if (value == null) return AccessibilityLabels()
+  val list = value.getMap("list")
+  val blockquote = value.getMap("blockquote")
+  val table = value.getMap("table")
+  val math = value.getMap("math")
+  val rotor = value.getMap("rotor")
+  return AccessibilityLabels(
+    bulletPoint = list?.getString("bulletPoint") ?: "",
+    nestedBulletPoint = list?.getString("nestedBulletPoint") ?: "",
+    orderedItem = list?.getString("orderedItem") ?: "",
+    nestedOrderedItem = list?.getString("nestedOrderedItem") ?: "",
+    blockquote = blockquote?.getString("quote") ?: "",
+    nestedBlockquote = blockquote?.getString("nestedQuote") ?: "",
+    tableRow = table?.getString("row") ?: "",
+    mathEquation = math?.getString("equation") ?: "",
+    rotorHeadings = rotor?.getString("headings") ?: "",
+    rotorLinks = rotor?.getString("links") ?: "",
+    rotorImages = rotor?.getString("images") ?: "",
   )
 }
 

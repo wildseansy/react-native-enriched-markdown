@@ -1,4 +1,5 @@
 #import "EnrichedMarkdownInternalText.h"
+#import "ENRMAccessibilityLabels.h"
 #import "ENRMContextMenuTextView+macOS.h"
 #import "ENRMSpoilerOverlayManager.h"
 #import "ENRMTextViewSetup.h"
@@ -115,6 +116,7 @@
 #if !TARGET_OS_OSX
   _accessibilityElements = [MarkdownAccessibilityElementBuilder buildElementsForTextView:_textView
                                                                                     info:_accessibilityInfo
+                                                                                  labels:_accessibilityLabels
                                                                                container:self];
 #endif
 }

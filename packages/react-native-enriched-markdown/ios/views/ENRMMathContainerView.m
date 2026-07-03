@@ -1,4 +1,5 @@
 #import "ENRMMathContainerView.h"
+#import "ENRMAccessibilityLabels.h"
 #import "ENRMFeatureFlags.h"
 #include <TargetConditionals.h>
 
@@ -212,7 +213,8 @@
 
 - (NSString *)accessibilityLabel
 {
-  return [NSString stringWithFormat:@"Math equation: %@", _cachedLatex];
+  return [_accessibilityLabels.mathEquation stringByReplacingOccurrencesOfString:@"{latex}"
+                                                                      withString:_cachedLatex ?: @""];
 }
 
 #if !TARGET_OS_OSX

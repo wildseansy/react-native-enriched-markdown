@@ -11,6 +11,7 @@ import {
   Image,
   Modal,
   TextInput,
+  Keyboard,
 } from 'react-native';
 import { useHeaderHeight } from '@react-navigation/elements';
 import {
@@ -74,6 +75,24 @@ export default function PlaygroundScreen() {
     const md = await inputRef.current?.getMarkdown();
     Alert.alert('Markdown', md ?? '(empty)', [{ text: 'OK' }]);
   }, []);
+  const handleCopyToClipboard = useCallback(() => {
+    inputRef.current?.copyToClipboard();
+    Alert.alert('Copied', 'Input contents copied to clipboard.', [
+      { text: 'OK' },
+    ]);
+  }, []);
+
+  const handleSetMarkdownConfirm = useCallback(() => {
+    const value = rawInput;
+    Keyboard.dismiss();
+    setSetMarkdownModalVisible(false);
+    setRawInput('');
+
+    requestAnimationFrame(() => {
+      inputRef.current?.setValue(value);
+      setMarkdown(value);
+    });
+  }, [rawInput]);
 
   return (
     <KeyboardAvoidingView
@@ -198,13 +217,23 @@ export default function PlaygroundScreen() {
           <Text style={styles.getMarkdownText}>Set Raw Markdown</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity
-          style={styles.getMarkdownButton}
-          onPress={handleGetMarkdown}
-          testID="get-markdown-button"
-        >
-          <Text style={styles.getMarkdownText}>Get Raw Markdown</Text>
-        </TouchableOpacity>
+        <View style={styles.buttonRow}>
+          <TouchableOpacity
+            style={[styles.getMarkdownButton, styles.buttonHalf]}
+            onPress={handleGetMarkdown}
+            testID="get-markdown-button"
+          >
+            <Text style={styles.getMarkdownText}>Get Raw Markdown</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.getMarkdownButton, styles.buttonHalf]}
+            onPress={handleCopyToClipboard}
+            testID="copy-to-clipboard-button"
+          >
+            <Text style={styles.getMarkdownText}>Copy Input to Clipboard</Text>
+          </TouchableOpacity>
+        </View>
 
         <Modal
           visible={setMarkdownModalVisible}
@@ -286,6 +315,52 @@ export default function PlaygroundScreen() {
           )}
         </View>
       </ScrollView>
+
+      <Modal
+        visible={setMarkdownModalVisible}
+        animationType={Platform.OS === 'android' ? 'fade' : 'slide'}
+        transparent
+        onRequestClose={() => setSetMarkdownModalVisible(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.modalOverlay}
+        >
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Set Raw Markdown</Text>
+            <TextInput
+              style={styles.modalInput}
+              value={rawInput}
+              onChangeText={setRawInput}
+              multiline
+              autoFocus
+              placeholder="Paste or type markdown..."
+              placeholderTextColor="#9CA3AF"
+              autoCorrect={false}
+              autoCapitalize="none"
+              testID="set-markdown-input"
+            />
+            <View style={styles.modalButtonRow}>
+              <TouchableOpacity
+                style={[styles.button, styles.modalCancelButton]}
+                onPress={() => setSetMarkdownModalVisible(false)}
+                testID="set-markdown-cancel"
+              >
+                <Text style={styles.buttonText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.button, styles.buttonActive]}
+                onPress={handleSetMarkdownConfirm}
+                testID="set-markdown-confirm"
+              >
+                <Text style={[styles.buttonText, styles.buttonTextActive]}>
+                  Set
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -347,6 +422,9 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     backgroundColor: '#BEEBD0',
     alignItems: 'center',
+  },
+  buttonHalf: {
+    flex: 1,
   },
   getMarkdownText: {
     fontSize: 14,

@@ -1,5 +1,6 @@
 #import "TableContainerView.h"
 #import "AttributedRenderer.h"
+#import "ENRMAccessibilityLabels.h"
 #import "HTMLGenerator.h"
 #import "LinkTapUtils.h"
 #import "MarkdownASTNode.h"
@@ -48,6 +49,8 @@
   CGFloat _borderWidth;
 
   NSString *_cachedMarkdown;
+
+  NSArray *_cachedAccessibilityElements;
 }
 
 - (instancetype)initWithConfig:(StyleConfig *)config
@@ -74,6 +77,8 @@
 #if !TARGET_OS_OSX
   _scrollView.bounces = YES;
   _scrollView.alwaysBounceHorizontal = NO;
+  _scrollView.isAccessibilityElement = NO;
+  _scrollView.accessibilityElementsHidden = YES;
 #endif
   [self addSubview:_scrollView];
 
@@ -241,6 +246,7 @@
 
   _rows = [allRows copy];
   _cachedMarkdown = [self buildMarkdownFromRows];
+  _cachedAccessibilityElements = nil;
   [self computeLayout];
   [self renderGrid];
 }
@@ -565,10 +571,20 @@
   return NO;
 }
 
+- (void)setAccessibilityLabels:(ENRMAccessibilityLabels *)labels
+{
+  if (_accessibilityLabels == labels)
+    return;
+  _accessibilityLabels = labels;
+  _cachedAccessibilityElements = nil;
+}
+
 - (NSArray *)accessibilityElements
 {
   if (_rows.count == 0)
     return nil;
+  if (_cachedAccessibilityElements != nil)
+    return _cachedAccessibilityElements;
 
   NSMutableArray *elements = [NSMutableArray array];
   CGFloat yOffset = 0;
@@ -586,8 +602,12 @@
     if (cellTexts.count > 0) {
 #if !TARGET_OS_OSX
       UIAccessibilityElement *element = [[UIAccessibilityElement alloc] initWithAccessibilityContainer:self];
-      element.accessibilityLabel = [NSString
-          stringWithFormat:@"Row %lu: %@", (unsigned long)(rowIndex + 1), [cellTexts componentsJoinedByString:@", "]];
+      NSString *withN = [_accessibilityLabels.tableRow
+          stringByReplacingOccurrencesOfString:@"{n}"
+                                    withString:[NSString stringWithFormat:@"%lu", (unsigned long)(rowIndex + 1)]];
+      element.accessibilityLabel =
+          [withN stringByReplacingOccurrencesOfString:@"{content}"
+                                           withString:[cellTexts componentsJoinedByString:@", "]];
       element.accessibilityFrameInContainerSpace = CGRectMake(0, yOffset, _totalTableWidth, rowHeight);
       element.accessibilityTraits =
           row.firstObject.isHeader ? UIAccessibilityTraitHeader : UIAccessibilityTraitStaticText;
@@ -602,6 +622,7 @@
     }
     yOffset += rowHeight;
   }
+  _cachedAccessibilityElements = elements;
   return elements;
 }
 

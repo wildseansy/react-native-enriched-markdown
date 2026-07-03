@@ -5,7 +5,6 @@ import com.swmansion.enriched.markdown.input.model.BlockType
 import com.swmansion.enriched.markdown.input.model.InputFormatterStyle
 import com.swmansion.enriched.markdown.input.spans.InputBulletSpan
 import com.swmansion.enriched.markdown.input.spans.InputListItemSpacingSpan
-import com.swmansion.enriched.markdown.parser.MarkdownASTNode
 
 /**
  * Block handler for unordered (bullet) list items. A single instance serves every
@@ -39,16 +38,4 @@ class UnorderedListBlockHandler : BlockHandler {
 
   /** `"- "` for a top-level item, indented two spaces per nesting depth (mirrors iOS). */
   override fun markdownLinePrefix(blockRange: BlockRange): String = "  ".repeat(blockRange.level.coerceAtLeast(0)) + "- "
-
-  override fun matchesNodeType(
-    nodeType: MarkdownASTNode.NodeType,
-    node: MarkdownASTNode,
-    outLevel: IntArray,
-  ): Boolean {
-    // Depth is derived from list-node nesting during the parse walk (see InputParser),
-    // not from a node attribute, so a bare ListItem match records depth 0 here.
-    if (nodeType != MarkdownASTNode.NodeType.ListItem) return false
-    outLevel[0] = 0
-    return true
-  }
 }

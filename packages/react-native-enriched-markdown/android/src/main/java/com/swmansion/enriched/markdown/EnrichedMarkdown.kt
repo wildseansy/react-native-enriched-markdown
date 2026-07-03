@@ -10,6 +10,7 @@ import android.util.Log
 import android.view.View
 import android.widget.FrameLayout
 import com.facebook.react.bridge.ReadableMap
+import com.swmansion.enriched.markdown.accessibility.AccessibilityLabels
 import com.swmansion.enriched.markdown.parser.Md4cFlags
 import com.swmansion.enriched.markdown.parser.Parser
 import com.swmansion.enriched.markdown.spoiler.SpoilerOverlay
@@ -82,6 +83,7 @@ class EnrichedMarkdown
     private var selectionColor: Int? = null
     private var selectionHandleColor: Int? = null
     private var selectionMenuConfig = SelectionMenuConfig()
+    private var accessibilityLabels = AccessibilityLabels()
     private var textBreakStrategy: String = BreakStrategyUtils.DEFAULT_STRATEGY
 
     private var onLinkPressCallback: ((String) -> Unit)? = null
@@ -254,6 +256,26 @@ class EnrichedMarkdown
                 .getMethod("setCopyAsMarkdownLabel", String::class.java)
                 .invoke(view, copyAsMarkdownLabel)
             }
+          }
+        }
+      }
+    }
+
+    fun setAccessibilityLabels(labels: AccessibilityLabels) {
+      if (accessibilityLabels == labels) return
+      accessibilityLabels = labels
+      segmentViews.filterIsInstance<EnrichedMarkdownInternalText>().forEach {
+        it.accessibilityLabels = labels
+      }
+      segmentViews.filterIsInstance<TableContainerView>().forEach {
+        it.accessibilityLabels = labels
+      }
+      mathContainerClass?.let { mathClass ->
+        segmentViews.filter { mathClass.isInstance(it) }.forEach { view ->
+          runCatching {
+            mathClass
+              .getMethod("setAccessibilityLabels", AccessibilityLabels::class.java)
+              .invoke(view, labels)
           }
         }
       }
@@ -458,6 +480,7 @@ class EnrichedMarkdown
       EnrichedMarkdownInternalText(context).apply {
         spoilerOverlay = this@EnrichedMarkdown.spoilerOverlay
         selectionMenuConfig = this@EnrichedMarkdown.selectionMenuConfig
+        accessibilityLabels = this@EnrichedMarkdown.accessibilityLabels
         setIsSelectable(selectable)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
           breakStrategy = BreakStrategyUtils.resolveBreakStrategy(textBreakStrategy)
@@ -486,6 +509,7 @@ class EnrichedMarkdown
     ) = TableContainerView(context, style).apply {
       allowFontScaling = this@EnrichedMarkdown.allowFontScaling
       maxFontSizeMultiplier = this@EnrichedMarkdown.maxFontSizeMultiplier
+      accessibilityLabels = this@EnrichedMarkdown.accessibilityLabels
       onLinkPress = onLinkPressCallback
       onLinkLongPress = onLinkLongPressCallback
       copyLabel = this@EnrichedMarkdown.selectionMenuConfig.copyLabel
@@ -504,6 +528,11 @@ class EnrichedMarkdown
           resolvedClass
             .getConstructor(Context::class.java, StyleConfig::class.java)
             .newInstance(context, style) as View
+        runCatching {
+          resolvedClass
+            .getMethod("setAccessibilityLabels", AccessibilityLabels::class.java)
+            .invoke(view, accessibilityLabels)
+        }
         resolvedClass
           .getMethod("setCopyLabel", String::class.java)
           .invoke(view, selectionMenuConfig.copyLabel)

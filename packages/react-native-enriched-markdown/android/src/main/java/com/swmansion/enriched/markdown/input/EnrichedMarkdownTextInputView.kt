@@ -1,5 +1,7 @@
 package com.swmansion.enriched.markdown.input
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.BlendMode
 import android.graphics.BlendModeColorFilter
@@ -315,7 +317,7 @@ class EnrichedMarkdownTextInputView(
       // A newline continues a list onto the new line (or exits on an empty item);
       // consult the handler so this isn't hardcoded per block type.
       handleNewlineBlockContinuation(editStart, deletedLength, insertedLength)
-      text?.let { blockStore.normalizeAnchoredRangesToLines(it) }
+      text?.let { blockStore.normalizeToLineBounds(it) }
       applyPendingStyles(editStart, insertedLength)
       // Settle the empty-bullet ZWSP anchor (insert/strip the char and re-snap ranges)
       // BEFORE stamping spans, so block formatting runs exactly once over the final
@@ -823,7 +825,7 @@ class EnrichedMarkdownTextInputView(
         if (block != null && le == ls) {
           runAsATransaction { editable.insert(ls, ZWSP.toString()) }
           blockStore.adjustForEdit(ls, 0, 1)
-          blockStore.normalizeAnchoredRangesToLines(editable)
+          blockStore.normalizeToLineBounds(editable)
           setSelection(ls + 1)
           anchorChanged = true
         }
@@ -831,7 +833,7 @@ class EnrichedMarkdownTextInputView(
 
       if (anchorChanged) {
         // Re-snap any range left zero-length by a strip so the next stamp is exact.
-        blockStore.normalizeAnchoredRangesToLines(editable)
+        blockStore.normalizeToLineBounds(editable)
         // Stamp once here only when the caller won't (selection / command paths). The
         // text-change pass passes restamp=false and stamps afterwards, so block spans
         // are applied exactly once over the settled text — never twice on one line.
@@ -881,6 +883,13 @@ class EnrichedMarkdownTextInputView(
     var e = pos.coerceIn(0, editable.length)
     while (e < editable.length && !editable[e].isLineBreak()) e++
     return e
+  }
+
+  fun copyToClipboard() {
+    val content = text
+    if (content.isNullOrEmpty()) return
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
+    clipboard.setPrimaryClip(ClipData.newPlainText(null, content))
   }
 
   fun setLinkForSelection(url: String) {
