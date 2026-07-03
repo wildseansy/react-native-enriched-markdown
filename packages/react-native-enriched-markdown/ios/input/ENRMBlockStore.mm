@@ -1,4 +1,5 @@
 #import "ENRMBlockStore.h"
+#import "ENRMRangeEditAdjustment.h"
 
 static NSUInteger sortedInsertionIndex(NSArray<ENRMBlockRange *> *ranges, NSUInteger location)
 {
@@ -17,42 +18,17 @@ static void removeIndexesInReverse(NSMutableArray *array, NSMutableIndexSet *ind
                             usingBlock:^(NSUInteger idx, BOOL *stop) { [array removeObjectAtIndex:idx]; }];
 }
 
-typedef NS_ENUM(NSInteger, EditOverlap) {
-  EditOverlapBeforeEdit,
-  EditOverlapAfterEdit,
-  EditOverlapFullyDeleted,
-  EditOverlapDeletedInside,
-  EditOverlapClippedEnd,
-  EditOverlapClippedStart,
-};
-
-static EditOverlap classifyOverlap(NSUInteger rangeStart, NSUInteger rangeEnd, NSUInteger editLocation,
-                                   NSUInteger deleteEnd)
-{
-  if (rangeEnd <= editLocation)
-    return EditOverlapBeforeEdit;
-  if (rangeStart >= deleteEnd)
-    return EditOverlapAfterEdit;
-  if (rangeStart >= editLocation && rangeEnd <= deleteEnd)
-    return EditOverlapFullyDeleted;
-  if (rangeStart < editLocation && rangeEnd > deleteEnd)
-    return EditOverlapDeletedInside;
-  if (rangeStart < editLocation && rangeEnd <= deleteEnd)
-    return EditOverlapClippedEnd;
-  return EditOverlapClippedStart;
-}
-
 /// Expands a selection to cover whole paragraphs (line-scoped block boundaries).
+/// Clamps unconditionally so out-of-bounds input can't reach
+/// paragraphRangeForRange: (which raises on an invalid range).
 static NSRange paragraphBoundsForRange(NSRange range, NSString *text)
 {
   if (text.length == 0) {
     return NSMakeRange(0, 0);
   }
-  NSRange clamped = NSIntersectionRange(range, NSMakeRange(0, text.length));
-  if (clamped.length == 0 && range.location <= text.length) {
-    clamped.location = MIN(range.location, text.length);
-  }
-  return [text paragraphRangeForRange:clamped];
+  NSUInteger location = MIN(range.location, text.length);
+  NSUInteger length = MIN(range.length, text.length - location);
+  return [text paragraphRangeForRange:NSMakeRange(location, length)];
 }
 
 @implementation ENRMBlockStore {
@@ -72,6 +48,10 @@ static NSRange paragraphBoundsForRange(NSRange range, NSString *text)
   return [_ranges copy];
 }
 
+// Incoming ranges are trusted to be non-overlapping and line-scoped — the
+// parser owns that invariant (md4c block structure never overlaps at the same
+// nesting level, and nested containers are not yet mapped). Revisit enforcement
+// here if a container block type (list, blockquote) is added.
 - (void)setRanges:(NSArray<ENRMBlockRange *> *)ranges
 {
   _ranges = [[ranges sortedArrayUsingComparator:^NSComparisonResult(ENRMBlockRange *first, ENRMBlockRange *second) {
@@ -150,62 +130,14 @@ static NSRange paragraphBoundsForRange(NSRange range, NSString *text)
   if (deletedLength == 0 && insertedLength == 0)
     return;
 
-  NSUInteger deleteEnd = editLocation + deletedLength;
   NSMutableIndexSet *indexesToRemove = [NSMutableIndexSet indexSet];
 
   for (NSUInteger idx = 0; idx < _ranges.count; idx++) {
     ENRMBlockRange *blockRange = _ranges[idx];
-    NSUInteger rangeStart = blockRange.range.location;
-    NSUInteger rangeEnd = NSMaxRange(blockRange.range);
-
-    if (deletedLength > 0) {
-      EditOverlap overlap = classifyOverlap(rangeStart, rangeEnd, editLocation, deleteEnd);
-
-      switch (overlap) {
-        case EditOverlapBeforeEdit:
-          break;
-
-        case EditOverlapAfterEdit:
-          blockRange.range = NSMakeRange(rangeStart - deletedLength + insertedLength, blockRange.range.length);
-          break;
-
-        case EditOverlapFullyDeleted:
-          [indexesToRemove addIndex:idx];
-          break;
-
-        case EditOverlapDeletedInside: {
-          NSUInteger newLength = blockRange.range.length - deletedLength + insertedLength;
-          blockRange.range = NSMakeRange(rangeStart, newLength);
-          break;
-        }
-
-        case EditOverlapClippedEnd: {
-          NSUInteger newEnd = editLocation + insertedLength;
-          NSUInteger newLength = newEnd > rangeStart ? newEnd - rangeStart : 0;
-          blockRange.range = NSMakeRange(rangeStart, newLength);
-          if (newLength == 0) {
-            [indexesToRemove addIndex:idx];
-          }
-          break;
-        }
-
-        case EditOverlapClippedStart: {
-          NSUInteger charsClipped = deleteEnd - rangeStart;
-          NSUInteger newStart = editLocation + insertedLength;
-          NSUInteger newLength = blockRange.range.length - charsClipped;
-          blockRange.range = NSMakeRange(newStart, newLength);
-          if (newLength == 0) {
-            [indexesToRemove addIndex:idx];
-          }
-          break;
-        }
-      }
-    } else {
-      if (rangeStart >= editLocation) {
-        blockRange.range = NSMakeRange(rangeStart + insertedLength, blockRange.range.length);
-      } else if (editLocation < rangeEnd) {
-        blockRange.range = NSMakeRange(rangeStart, blockRange.range.length + insertedLength);
-      }
+    ENRMAdjustedRange adjusted = ENRMAdjustRangeForEdit(blockRange.range, editLocation, deletedLength, insertedLength);
+    blockRange.range = adjusted.range;
+    if (adjusted.shouldRemove) {
+      [indexesToRemove addIndex:idx];
     }
   }
 

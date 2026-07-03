@@ -15,6 +15,12 @@ class BlockStore {
 
   val allRanges: List<BlockRange> get() = Collections.unmodifiableList(ranges)
 
+  /**
+   * Incoming ranges are trusted to be non-overlapping and line-scoped — the
+   * parser owns that invariant (md4c block structure never overlaps at the same
+   * nesting level, and nested containers are not yet mapped). Revisit
+   * enforcement here if a container block type (list, blockquote) is added.
+   */
   fun setRanges(newRanges: List<BlockRange>) {
     ranges.clear()
     ranges.addAll(newRanges.sortedBy { it.start })
@@ -59,73 +65,13 @@ class BlockStore {
     removeBlocksOverlapping(start, end)
   }
 
-  /**
-   * Shifts/clips block ranges to follow a text edit, using the same overlap
-   * classification shape as [FormattingStore.adjustForEdit].
-   */
+  /** Shifts/clips block ranges to follow a text edit. See [RangeEditAdjustment]. */
   fun adjustForEdit(
     editLocation: Int,
     deletedLength: Int,
     insertedLength: Int,
   ) {
-    if (deletedLength == 0 && insertedLength == 0) return
-
-    val deleteEnd = editLocation + deletedLength
-    val indexesToRemove = mutableListOf<Int>()
-
-    for ((idx, range) in ranges.withIndex()) {
-      if (deletedLength > 0) {
-        when (classifyOverlap(range.start, range.end, editLocation, deleteEnd)) {
-          EditOverlap.BEFORE_EDIT -> { /* no change */ }
-
-          EditOverlap.AFTER_EDIT -> {
-            range.start = range.start - deletedLength + insertedLength
-            range.end = range.end - deletedLength + insertedLength
-          }
-
-          EditOverlap.FULLY_DELETED -> {
-            indexesToRemove.add(idx)
-          }
-
-          EditOverlap.DELETED_INSIDE -> {
-            range.end = range.end - deletedLength + insertedLength
-          }
-
-          EditOverlap.CLIPPED_END -> {
-            val newEnd = editLocation + insertedLength
-            val newLength = if (newEnd > range.start) newEnd - range.start else 0
-            range.end = range.start + newLength
-            if (newLength == 0) indexesToRemove.add(idx)
-          }
-
-          EditOverlap.CLIPPED_START -> {
-            val charsClipped = deleteEnd - range.start
-            val newStart = editLocation + insertedLength
-            val oldLength = range.length
-            range.start = newStart
-            range.end = newStart + oldLength - charsClipped
-            if (range.length == 0) indexesToRemove.add(idx)
-          }
-        }
-      } else {
-        when {
-          range.start >= editLocation -> {
-            range.start += insertedLength
-            range.end += insertedLength
-          }
-
-          editLocation < range.end -> {
-            range.end += insertedLength
-          }
-        }
-      }
-    }
-
-    for (idx in indexesToRemove.reversed()) {
-      ranges.removeAt(idx)
-    }
-
-    ranges.removeAll { it.length == 0 }
+    RangeEditAdjustment.adjustForEdit(ranges, editLocation, deletedLength, insertedLength)
   }
 
   /**
@@ -167,27 +113,5 @@ class BlockStore {
       index++
     }
     return index
-  }
-
-  private enum class EditOverlap {
-    BEFORE_EDIT,
-    AFTER_EDIT,
-    FULLY_DELETED,
-    DELETED_INSIDE,
-    CLIPPED_END,
-    CLIPPED_START,
-  }
-
-  private fun classifyOverlap(
-    rangeStart: Int,
-    rangeEnd: Int,
-    editLocation: Int,
-    deleteEnd: Int,
-  ): EditOverlap {
-    if (rangeEnd <= editLocation) return EditOverlap.BEFORE_EDIT
-    if (rangeStart >= deleteEnd) return EditOverlap.AFTER_EDIT
-    if (rangeStart >= editLocation && rangeEnd <= deleteEnd) return EditOverlap.FULLY_DELETED
-    if (rangeStart < editLocation && rangeEnd > deleteEnd) return EditOverlap.DELETED_INSIDE
-    return if (rangeStart < editLocation) EditOverlap.CLIPPED_END else EditOverlap.CLIPPED_START
   }
 }

@@ -42,10 +42,9 @@ static bool isSupportedSpan(MD_SPANTYPE md4cType, ENRMInputStyleType &outStyleTy
 }
 
 // Block-type mapping mirrors kSupportedSpans for the inline pipeline. A block
-// handler extends recognition by adding its md4c block here (e.g. a heading
-// handler adds {MD_BLOCK_H, ENRMInputBlockTypeHeading} and reads the level from
-// MD_BLOCK_H_DETAIL in resolveBlockLevel below). MD_BLOCK_P maps to the implicit
-// Paragraph default and produces no stored block range.
+// handler extends recognition by adding its md4c block here and, if leveled,
+// reading its detail in resolveBlockLevel below. MD_BLOCK_P maps to the
+// implicit Paragraph default and produces no stored block range.
 struct BlockTypeMapping {
   MD_BLOCKTYPE md4cType;
   ENRMInputBlockType blockType;
@@ -308,23 +307,12 @@ static bool runMd4cParse(NSString *markdown, ParseContext &context)
   return md_parse(completedUTF8, (MD_SIZE)completedLength, &parser, &context) == 0;
 }
 
-} // namespace
-
-@implementation ENRMInputParser
-
-- (NSArray<ENRMInputStyledRange *> *)parse:(NSString *)markdown
+// Builds inline styled ranges (raw-markdown UTF-16 coords) from a completed
+// parse. Split out so parseToPlainTextAndRanges: can derive inline and block
+// ranges from ONE md4c run instead of parsing twice.
+static NSArray<ENRMInputStyledRange *> *styledRangesFromContext(const ParseContext &context,
+                                                                const std::vector<NSUInteger> &byteMap)
 {
-  if (markdown.length == 0) {
-    return @[];
-  }
-
-  ParseContext context;
-  if (!runMd4cParse(markdown, context)) {
-    return @[];
-  }
-
-  auto byteMap = buildByteToUTF16Map(context.buffer, context.bufferLength);
-
   NSMutableArray<ENRMInputStyledRange *> *results = [NSMutableArray arrayWithCapacity:context.resolved.size()];
 
   for (const auto &spanInfo : context.resolved) {
@@ -372,24 +360,14 @@ static bool runMd4cParse(NSString *markdown, ParseContext &context)
   return results;
 }
 
-/// Resolves block-level ranges in raw-markdown (UTF-16) coordinates, mirroring
-/// `parse:` for inline spans. `type`/`level`/`range` carry the block's identity
-/// and its text content range. Paragraph blocks (the implicit default) are
-/// omitted — only blocks a handler claims are returned. In PR1 only MD_BLOCK_P
-/// is mapped, so this returns @[]; a heading handler's block type lights it up.
-- (NSArray<ENRMBlockRange *> *)parseBlocks:(NSString *)markdown
+// Builds block-level ranges (raw-markdown UTF-16 coords) from the same
+// completed parse, mirroring styledRangesFromContext for inline spans.
+// Paragraph blocks (the implicit default) are omitted — only blocks a handler
+// claims are returned. In PR1 only MD_BLOCK_P is mapped, so this returns @[];
+// a heading handler's block type lights it up.
+static NSArray<ENRMBlockRange *> *blockRangesFromContext(const ParseContext &context,
+                                                         const std::vector<NSUInteger> &byteMap)
 {
-  if (markdown.length == 0) {
-    return @[];
-  }
-
-  ParseContext context;
-  if (!runMd4cParse(markdown, context)) {
-    return @[];
-  }
-
-  auto byteMap = buildByteToUTF16Map(context.buffer, context.bufferLength);
-
   NSMutableArray<ENRMBlockRange *> *results = [NSMutableArray arrayWithCapacity:context.resolvedBlocks.size()];
 
   for (const auto &blockInfo : context.resolvedBlocks) {
@@ -415,6 +393,25 @@ static bool runMd4cParse(NSString *markdown, ParseContext &context)
   return results;
 }
 
+} // namespace
+
+@implementation ENRMInputParser
+
+- (NSArray<ENRMInputStyledRange *> *)parse:(NSString *)markdown
+{
+  if (markdown.length == 0) {
+    return @[];
+  }
+
+  ParseContext context;
+  if (!runMd4cParse(markdown, context)) {
+    return @[];
+  }
+
+  auto byteMap = buildByteToUTF16Map(context.buffer, context.bufferLength);
+  return styledRangesFromContext(context, byteMap);
+}
+
 - (ENRMParseResult *)parseToPlainTextAndRanges:(NSString *)markdown
 {
   ENRMParseResult *parseResult = [[ENRMParseResult alloc] init];
@@ -426,8 +423,16 @@ static bool runMd4cParse(NSString *markdown, ParseContext &context)
     return parseResult;
   }
 
-  NSArray<ENRMInputStyledRange *> *styledRanges = [self parse:markdown];
-  NSArray<ENRMBlockRange *> *rawBlockRanges = [self parseBlocks:markdown];
+  // One md4c run feeds both pipelines: inline styled ranges and block ranges
+  // are derived from the same ParseContext.
+  ParseContext context;
+  NSArray<ENRMInputStyledRange *> *styledRanges = @[];
+  NSArray<ENRMBlockRange *> *rawBlockRanges = @[];
+  if (runMd4cParse(markdown, context)) {
+    auto byteMap = buildByteToUTF16Map(context.buffer, context.bufferLength);
+    styledRanges = styledRangesFromContext(context, byteMap);
+    rawBlockRanges = blockRangesFromContext(context, byteMap);
+  }
 
   NSUInteger rawLength = markdown.length;
 
